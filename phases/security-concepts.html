@@ -38,6 +38,90 @@ the one-sentence intuition to fall back on when the details blur.
 Security is not a feature you add; it is a set of guarantees you can
 reason about. This page is about building that reasoning.</p>
 </blockquote>
+<div class="topic-legend">
+<p><span><span class="swatch" style="background:#6aa6ff"></span>Core
+concept</span> <span><span class="swatch"
+style="background:#e8b84e"></span>Interview hot topic</span> <span><span
+class="swatch" style="background:#b18cff"></span>Architecture
+depth</span> <span><span class="swatch"
+style="background:#e87a4e"></span>Gap to close</span> <span><span
+class="swatch" style="background:#4ee8a0"></span>Hands-on
+practice</span></p>
+</div>
+<div class="topic-grid">
+<a class="topic-card" href="#cryptographic-primitives-the-three-tools">
+<h4>
+Cryptographic primitives
+</h4>
+<div class="tags">
+<span class="cat cat-core">Core concept</span>
+</div>
+</a> <a class="topic-card" href="#digital-signatures">
+<h4>
+Digital signatures
+</h4>
+<div class="tags">
+<span class="cat cat-core">Core concept</span><span
+class="cat cat-interview">Interview hot topic</span>
+</div>
+</a>
+<a class="topic-card" href="#certificates-and-pki-making-public-keys-trustworthy">
+<h4>
+Certificates &amp; PKI
+</h4>
+<div class="tags">
+<span class="cat cat-core">Core concept</span><span
+class="cat cat-gap">Gap to close</span>
+</div>
+</a> <a class="topic-card" href="#short-lived-certificates">
+<h4>
+Short-lived certificates
+</h4>
+<div class="tags">
+<span class="cat cat-arch">Architecture depth</span><span
+class="cat cat-gap">Gap to close</span>
+</div>
+</a> <a class="topic-card" href="#the-tls-handshake">
+<h4>
+TLS handshake
+</h4>
+<div class="tags">
+<span class="cat cat-core">Core concept</span><span
+class="cat cat-interview">Interview hot topic</span>
+</div>
+</a> <a class="topic-card" href="#the-cluster-pki-mtls-everywhere">
+<h4>
+Kubernetes PKI &amp; mTLS
+</h4>
+<div class="tags">
+<span class="cat cat-arch">Architecture depth</span><span
+class="cat cat-interview">Interview hot topic</span>
+</div>
+</a> <a class="topic-card" href="#gate-1-authentication-who-are-you">
+<h4>
+Identity &amp; authentication
+</h4>
+<div class="tags">
+<span class="cat cat-arch">Architecture depth</span><span
+class="cat cat-gap">Gap to close</span>
+</div>
+</a> <a class="topic-card" href="#gate-2-authorization-are-you-allowed">
+<h4>
+Authorization &amp; admission
+</h4>
+<div class="tags">
+<span class="cat cat-arch">Architecture depth</span>
+</div>
+</a> <a class="topic-card" href="#how-to-guarantee-security">
+<h4>
+Guaranteeing security
+</h4>
+<div class="tags">
+<span class="cat cat-arch">Architecture depth</span><span
+class="cat cat-practice">Hands-on practice</span>
+</div>
+<p></a></p>
+</div>
 <hr />
 <h2 id="learning-objectives">Learning objectives</h2>
 <ul>
@@ -53,99 +137,6 @@ authorization, admission, and encryption</li>
 threat models, not vibes</li>
 </ul>
 <p><strong>Estimated study time:</strong> 2–3 days</p>
-<hr />
-<h2 id="topic-map">Topic map</h2>
-<div class="topic-legend">
-<p><span><span class="swatch" style="background:#6aa6ff"></span>Core
-concept</span> <span><span class="swatch"
-style="background:#e8b84e"></span>Interview hot topic</span> <span><span
-class="swatch" style="background:#b18cff"></span>Architecture
-depth</span> <span><span class="swatch"
-style="background:#e87a4e"></span>Gap to close</span> <span><span
-class="swatch" style="background:#4ee8a0"></span>Hands-on
-practice</span></p>
-</div>
-<div class="topic-grid">
-<div class="topic-card">
-<h4>
-Cryptographic primitives
-</h4>
-<div class="tags">
-<span class="cat cat-core">Core concept</span>
-</div>
-</div>
-<div class="topic-card">
-<h4>
-Digital signatures
-</h4>
-<div class="tags">
-<span class="cat cat-core">Core concept</span><span
-class="cat cat-interview">Interview hot topic</span>
-</div>
-</div>
-<div class="topic-card">
-<h4>
-Certificates &amp; PKI
-</h4>
-<div class="tags">
-<span class="cat cat-core">Core concept</span><span
-class="cat cat-gap">Gap to close</span>
-</div>
-</div>
-<div class="topic-card">
-<h4>
-Short-lived certificates
-</h4>
-<div class="tags">
-<span class="cat cat-arch">Architecture depth</span><span
-class="cat cat-gap">Gap to close</span>
-</div>
-</div>
-<div class="topic-card">
-<h4>
-TLS handshake
-</h4>
-<div class="tags">
-<span class="cat cat-core">Core concept</span><span
-class="cat cat-interview">Interview hot topic</span>
-</div>
-</div>
-<div class="topic-card">
-<h4>
-Kubernetes PKI &amp; mTLS
-</h4>
-<div class="tags">
-<span class="cat cat-arch">Architecture depth</span><span
-class="cat cat-interview">Interview hot topic</span>
-</div>
-</div>
-<div class="topic-card">
-<h4>
-Identity &amp; authentication
-</h4>
-<div class="tags">
-<span class="cat cat-arch">Architecture depth</span><span
-class="cat cat-gap">Gap to close</span>
-</div>
-</div>
-<div class="topic-card">
-<h4>
-Authorization &amp; admission
-</h4>
-<div class="tags">
-<span class="cat cat-arch">Architecture depth</span>
-</div>
-</div>
-<div class="topic-card">
-<h4>
-Guaranteeing security
-</h4>
-<div class="tags">
-<span class="cat cat-arch">Architecture depth</span><span
-class="cat cat-practice">Hands-on practice</span>
-</div>
-</div>
-</div>
 <hr />
 <h2 id="cryptographic-primitives-the-three-tools">1. Cryptographic
 primitives — the three tools</h2>

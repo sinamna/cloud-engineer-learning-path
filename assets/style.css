@@ -286,9 +286,15 @@ footer.site-footer {
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+  text-decoration: none;
+  cursor: pointer;
 }
-.topic-card:hover { border-color: var(--accent-dim); }
+.topic-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+  text-decoration: none;
+}
 .topic-card h4 {
   margin: 0;
   font-family: var(--mono);
@@ -298,6 +304,7 @@ footer.site-footer {
   letter-spacing: 0;
   font-weight: 600;
 }
+.topic-card:hover h4 { color: var(--accent); }
 .topic-card .tags { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 
 .cat {
