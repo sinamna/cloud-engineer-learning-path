@@ -7,6 +7,7 @@ ORDER = [
     "phase3-observability-sre",
     "phase4-architecture-design",
     "phase5-interview-prep",
+    "security-concepts",
 ]
 
 TITLES = {
@@ -15,6 +16,7 @@ TITLES = {
     "phase3-observability-sre": "Phase 3 — Observability & SRE",
     "phase4-architecture-design": "Phase 4 — Architecture & Design",
     "phase5-interview-prep": "Phase 5 — Interview Prep",
+    "security-concepts": "Security Concepts",
 }
 
 SUBS = {
@@ -23,6 +25,7 @@ SUBS = {
     "phase3-observability-sre": "Prometheus TSDB, OpenTelemetry, SLO engineering, incident management",
     "phase4-architecture-design": "Multi-region HA, platform engineering, FinOps, zero-trust security",
     "phase5-interview-prep": "System design, behavioral questions, knowledge quiz, common gaps",
+    "security-concepts": "Digital signatures, certificates, TLS handshakes, and Kubernetes security",
 }
 
 EYEBROWS = {
@@ -31,6 +34,7 @@ EYEBROWS = {
     "phase3-observability-sre": "03 / 05 — observability",
     "phase4-architecture-design": "04 / 05 — architecture",
     "phase5-interview-prep": "05 / 05 — interview prep",
+    "security-concepts": "deep dive — cryptography & kubernetes security",
 }
 
 ACTIVE_KEYS = {
@@ -39,9 +43,10 @@ ACTIVE_KEYS = {
     "phase3-observability-sre": "p3active",
     "phase4-architecture-design": "p4active",
     "phase5-interview-prep": "p5active",
+    "security-concepts": "secactive",
 }
 
-os.chdir("/home/claude/site")
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 for i, name in enumerate(ORDER):
     prevlink = prevtitle = nextlink = nexttitle = None

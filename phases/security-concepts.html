@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security Concepts — Senior Cloud Engineer Study System</title>
+<meta name="description" content="Digital signatures, certificates, TLS handshakes, and Kubernetes security">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a href="../index.html" class="topbar-brand"><span class="dot"></span>cloud-engineer-deepdive</a>
+    <nav class="topbar-nav">
+      <a href="../index.html">index</a>
+      <a href="../phases/phase1-foundation-gaps.html">01 foundation</a>
+      <a href="../phases/phase2-kubernetes-mastery.html">02 kubernetes</a>
+      <a href="../phases/phase3-observability-sre.html">03 observability</a>
+      <a href="../phases/phase4-architecture-design.html">04 architecture</a>
+      <a href="../phases/phase5-interview-prep.html">05 interview</a>
+      <a href="../phases/security-concepts.html" class="active">security</a>
+    </nav>
+  </div>
+</div>
+
+<div class="page-wrap">
+  <div class="doc-eyebrow">deep dive — cryptography & kubernetes security</div>
+<h1 id="security-concepts">Security Concepts</h1>
+<h2 id="cryptography-tls-and-how-kubernetes-stays-secure">Cryptography,
+TLS, and How Kubernetes Stays Secure</h2>
+<blockquote>
+<p>The goal of this page is dual literacy: a <strong>basic</strong>
+picture you can hold in your head, and the <strong>deep</strong>
+mechanics underneath it. Each topic ends with a <em>mental model</em> —
+the one-sentence intuition to fall back on when the details blur.
+Security is not a feature you add; it is a set of guarantees you can
+reason about. This page is about building that reasoning.</p>
+</blockquote>
+<hr />
+<h2 id="learning-objectives">Learning objectives</h2>
+<ul>
+<li>Explain what a digital signature actually proves — and what it does
+<strong>not</strong></li>
+<li>Describe a TLS handshake packet by packet, for both TLS 1.2 and
+1.3</li>
+<li>Understand why short-lived certificates beat long-lived secrets, and
+the machinery that makes them practical</li>
+<li>Map the entire Kubernetes security model: identity, authentication,
+authorization, admission, and encryption</li>
+<li>Reason about “how do I <em>guarantee</em> this is secure” using
+threat models, not vibes</li>
+</ul>
+<p><strong>Estimated study time:</strong> 2–3 days</p>
+<hr />
+<h2 id="topic-map">Topic map</h2>
+<div class="topic-legend">
+<p><span><span class="swatch" style="background:#6aa6ff"></span>Core
+concept</span> <span><span class="swatch"
+style="background:#e8b84e"></span>Interview hot topic</span> <span><span
+class="swatch" style="background:#b18cff"></span>Architecture
+depth</span> <span><span class="swatch"
+style="background:#e87a4e"></span>Gap to close</span> <span><span
+class="swatch" style="background:#4ee8a0"></span>Hands-on
+practice</span></p>
+</div>
+<div class="topic-grid">
+<div class="topic-card">
+<pre><code>&lt;h4&gt;Cryptographic primitives&lt;/h4&gt;
+&lt;div class=&quot;tags&quot;&gt;&lt;span class=&quot;cat cat-core&quot;&gt;Core concept&lt;/span&gt;&lt;/div&gt;</code></pre>
+</div>
+<div class="topic-card">
+<pre><code>&lt;h4&gt;Digital signatures&lt;/h4&gt;
+&lt;div class=&quot;tags&quot;&gt;&lt;span class=&quot;cat cat-core&quot;&gt;Core concept&lt;/span&gt;&lt;span class=&quot;cat cat-interview&quot;&gt;Interview hot topic&lt;/span&gt;&lt;/div&gt;</code></pre>
+</div>
+<div class="topic-card">
+<pre><code>&lt;h4&gt;Certificates &amp;amp; PKI&lt;/h4&gt;
+&lt;div class=&quot;tags&quot;&gt;&lt;span class=&quot;cat cat-core&quot;&gt;Core concept&lt;/span&gt;&lt;span class=&quot;cat cat-gap&quot;&gt;Gap to close&lt;/span&gt;&lt;/div&gt;</code></pre>
+</div>
+<div class="topic-card">
+<pre><code>&lt;h4&gt;Short-lived certificates&lt;/h4&gt;
+&lt;div class=&quot;tags&quot;&gt;&lt;span class=&quot;cat cat-arch&quot;&gt;Architecture depth&lt;/span&gt;&lt;span class=&quot;cat cat-gap&quot;&gt;Gap to close&lt;/span&gt;&lt;/div&gt;</code></pre>
+</div>
+<div class="topic-card">
+<pre><code>&lt;h4&gt;TLS handshake&lt;/h4&gt;
+&lt;div class=&quot;tags&quot;&gt;&lt;span class=&quot;cat cat-core&quot;&gt;Core concept&lt;/span&gt;&lt;span class=&quot;cat cat-interview&quot;&gt;Interview hot topic&lt;/span&gt;&lt;/div&gt;</code></pre>
+</div>
+<div class="topic-card">
+<pre><code>&lt;h4&gt;Kubernetes PKI &amp;amp; mTLS&lt;/h4&gt;
+&lt;div class=&quot;tags&quot;&gt;&lt;span class=&quot;cat cat-arch&quot;&gt;Architecture depth&lt;/span&gt;&lt;span class=&quot;cat cat-interview&quot;&gt;Interview hot topic&lt;/span&gt;&lt;/div&gt;</code></pre>
+</div>
+<div class="topic-card">
+<pre><code>&lt;h4&gt;Identity &amp;amp; authentication&lt;/h4&gt;
+&lt;div class=&quot;tags&quot;&gt;&lt;span class=&quot;cat cat-arch&quot;&gt;Architecture depth&lt;/span&gt;&lt;span class=&quot;cat cat-gap&quot;&gt;Gap to close&lt;/span&gt;&lt;/div&gt;</code></pre>
+</div>
+<div class="topic-card">
+<pre><code>&lt;h4&gt;Authorization &amp;amp; admission&lt;/h4&gt;
+&lt;div class=&quot;tags&quot;&gt;&lt;span class=&quot;cat cat-arch&quot;&gt;Architecture depth&lt;/span&gt;&lt;/div&gt;</code></pre>
+</div>
+<div class="topic-card">
+<pre><code>&lt;h4&gt;Guaranteeing security&lt;/h4&gt;
+&lt;div class=&quot;tags&quot;&gt;&lt;span class=&quot;cat cat-arch&quot;&gt;Architecture depth&lt;/span&gt;&lt;span class=&quot;cat cat-practice&quot;&gt;Hands-on practice&lt;/span&gt;&lt;/div&gt;</code></pre>
+</div>
+</div>
+<hr />
+<h2 id="cryptographic-primitives-the-three-tools">1. Cryptographic
+primitives — the three tools</h2>
+<p>Everything in this page is built from exactly three primitives. If
+you understand what each <em>guarantees</em>, the rest is
+composition.</p>
+<p><strong>1. Cryptographic hash (e.g. SHA-256).</strong> A one-way
+function: easy to compute <code>H(message)</code>, infeasible to
+reverse, and infeasible to find two messages with the same hash
+(collision resistance). It compresses any input to a fixed-size
+fingerprint.</p>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="at">-n</span> <span class="st">&quot;hello&quot;</span> <span class="kw">|</span> <span class="fu">sha256sum</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="co"># 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Change one bit → completely different output (avalanche effect)</span></span></code></pre></div>
+<p>Hashes give you <strong>integrity</strong>: if the hash matches, the
+bytes were not altered.</p>
+<p><strong>2. Symmetric encryption (e.g. AES-256-GCM).</strong> One
+shared secret key both encrypts and decrypts. Fast
+(hardware-accelerated, ~GB/s) but requires both parties to already share
+the key. GCM is <em>authenticated</em> encryption — it gives
+confidentiality <strong>and</strong> integrity in one operation.</p>
+<p><strong>3. Asymmetric / public-key crypto (e.g. RSA, ECDSA,
+Ed25519).</strong> A <em>key pair</em>: a public key you publish freely
+and a private key you guard. The mathematical relationship means:</p>
+<ul>
+<li>Encrypt with the <strong>public</strong> key → only the
+<strong>private</strong> key can decrypt → <em>confidentiality</em> to
+the key holder.</li>
+<li>Sign with the <strong>private</strong> key → anyone with the
+<strong>public</strong> key can verify → <em>authenticity</em> and
+<em>non-repudiation</em>.</li>
+</ul>
+<p>Asymmetric crypto is slow (~1000x slower than symmetric), so it is
+almost never used to encrypt bulk data. Its job is to <strong>bootstrap
+trust</strong> and <strong>exchange a symmetric key</strong>. That
+single sentence explains the entire shape of TLS.</p>
+<blockquote>
+<p><strong>Mental model</strong> — Asymmetric crypto is the expensive
+armored truck you use once to deliver a shared house key; symmetric
+crypto is the cheap, fast lock you use for everything after. Hashing is
+the tamper-evident seal on the envelope.</p>
+</blockquote>
+<hr />
+<h2 id="digital-signatures">2. Digital signatures</h2>
+<h3 id="the-basic-idea">2.1 The basic idea</h3>
+<p>A signature answers one question: <strong>“Did the holder of <em>this
+specific</em> private key vouch for <em>these exact</em>
+bytes?”</strong> If verification passes, you know two things at
+once:</p>
+<ul>
+<li><strong>Authenticity</strong> — it came from whoever controls the
+private key.</li>
+<li><strong>Integrity</strong> — not a single byte changed since they
+signed it.</li>
+</ul>
+<p>It does <strong>not</strong> give confidentiality. A signed message
+is still plaintext; anyone can read it. Signing is about <em>trust</em>,
+not <em>secrecy</em>.</p>
+<h3 id="the-deep-mechanics">2.2 The deep mechanics</h3>
+<p>You never sign the whole message — you sign its hash. This is both a
+performance trick (asymmetric ops are slow, hashes are small and
+fixed-size) and a security requirement.</p>
+<pre><code>SIGNING (private key holder):
+  digest    = SHA256(message)
+  signature = Sign_privkey(digest)
+  send: (message, signature)
+
+VERIFYING (anyone with the public key):
+  digest&#39;   = SHA256(received_message)      # recompute from the bytes you got
+  ok        = Verify_pubkey(signature, digest&#39;)
+  # ok == true  ⟺  signature was produced by the matching private key
+  #                over a message whose hash equals digest&#39;</code></pre>
+<p>The verifier recomputes the hash <em>independently</em> from the
+bytes in hand and checks it against what the signature attests to.
+Tamper with one byte → <code>digest'</code> changes → verification
+fails. Forge without the private key → infeasible, because producing a
+valid signature requires solving the hard math problem (integer
+factorization for RSA, discrete log on an elliptic curve for
+ECDSA/Ed25519).</p>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Generate an Ed25519 key pair (modern, fast, small)</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="ex">openssl</span> genpkey <span class="at">-algorithm</span> ed25519 <span class="at">-out</span> priv.pem</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="ex">openssl</span> pkey <span class="at">-in</span> priv.pem <span class="at">-pubout</span> <span class="at">-out</span> pub.pem</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Sign a file and verify it</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a><span class="ex">openssl</span> pkeyutl <span class="at">-sign</span>   <span class="at">-inkey</span> priv.pem <span class="at">-rawin</span> <span class="at">-in</span> message.txt <span class="at">-out</span> sig.bin</span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a><span class="ex">openssl</span> pkeyutl <span class="at">-verify</span> <span class="at">-pubin</span> <span class="at">-inkey</span> pub.pem <span class="at">-rawin</span> <span class="at">-in</span> message.txt <span class="at">-sigfile</span> sig.bin</span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a><span class="co"># &quot;Signature Verified Successfully&quot; — flip one byte of message.txt and it fails</span></span></code></pre></div>
+<p><strong>Where you already rely on signatures:</strong> every TLS
+certificate (the CA signs it), every signed container image
+(<code>cosign</code>), every JWT / ServiceAccount token, every
+<code>git commit -S</code>, every OS package and software update. The
+entire trust fabric of the internet is signatures all the way down.</p>
+<blockquote>
+<p><strong>Mental model</strong> — A signature is a <strong>wax seal
+made from a stamp only you possess</strong>, pressed over a
+tamper-evident summary of the document. Anyone can recognize the seal
+(public key); only you can produce it (private key); and the seal is
+bound to <em>this</em> document’s fingerprint, so it cannot be peeled
+off and reused on another.</p>
+</blockquote>
+<hr />
+<h2 id="certificates-and-pki-making-public-keys-trustworthy">3.
+Certificates and PKI — making public keys trustworthy</h2>
+<h3 id="the-problem-signatures-dont-solve">3.1 The problem signatures
+don’t solve</h3>
+<p>Signatures prove a message came from <em>a</em> private key. But how
+do you know that public key belongs to <code>api.bank.com</code> and not
+an attacker? A raw public key is anonymous. You need to bind an
+<strong>identity</strong> to a <strong>public key</strong>, and have
+someone you trust vouch for that binding.</p>
+<p>That binding, signed by a trusted third party, <strong>is a
+certificate.</strong></p>
+<h3 id="what-a-certificate-actually-is">3.2 What a certificate actually
+is</h3>
+<p>An X.509 certificate is a structured document containing, at
+minimum:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Subject</td>
+<td>Who this identifies (<code>CN=api.bank.com</code>, SANs)</td>
+</tr>
+<tr>
+<td>Subject Public Key</td>
+<td>The public key being vouched for</td>
+</tr>
+<tr>
+<td>Issuer</td>
+<td>Which CA signed this</td>
+</tr>
+<tr>
+<td>Validity</td>
+<td><code>notBefore</code> / <code>notAfter</code> window</td>
+</tr>
+<tr>
+<td>Extensions</td>
+<td>Key usage, SANs, EKU (server/client auth), etc.</td>
+</tr>
+<tr>
+<td><strong>Signature</strong></td>
+<td>The <strong>CA’s signature</strong> over all the fields above</td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb13"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Inspect a live certificate</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="ex">openssl</span> s_client <span class="at">-connect</span> example.com:443 <span class="at">-servername</span> example.com <span class="op">&lt;</span>/dev/null <span class="dv">2</span><span class="op">&gt;</span>/dev/null <span class="dt">\</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>  <span class="kw">|</span> <span class="ex">openssl</span> x509 <span class="at">-noout</span> <span class="at">-text</span> <span class="kw">|</span> <span class="fu">head</span> <span class="at">-40</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Decode a local cert</span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a><span class="ex">openssl</span> x509 <span class="at">-in</span> tls.crt <span class="at">-noout</span> <span class="at">-subject</span> <span class="at">-issuer</span> <span class="at">-dates</span> <span class="at">-ext</span> subjectAltName</span></code></pre></div>
+<p>The certificate is just a signed claim: <em>“I, the CA, attest that
+this public key belongs to this subject, valid for this window.”</em>
+Verifying it is exactly the signature verification from §2 — you check
+the CA’s signature over the cert body using the CA’s public key.</p>
+<h3 id="the-chain-of-trust">3.3 The chain of trust</h3>
+<p>You don’t trust every CA directly — you trust a small set of
+<strong>root CAs</strong> whose certificates ship in your OS / browser
+trust store. Roots sign <strong>intermediates</strong>, intermediates
+sign <strong>leaf</strong> (end-entity) certs. Verification walks the
+chain:</p>
+<pre><code>leaf (api.bank.com)  ──signed by──►  intermediate CA  ──signed by──►  root CA
+                                                                        │
+                                              in your trust store ◄─────┘ (trust anchor)</code></pre>
+<p>At each hop you verify the signature with the issuer’s public key,
+check validity dates, check name constraints and key usage, and confirm
+the leaf’s SAN matches the hostname you asked for. The chain terminates
+at a root you <em>already</em> trust out-of-band. <strong>Trust is not
+infinite recursion; it bottoms out at the trust anchors you
+pre-installed.</strong></p>
+<blockquote>
+<p><strong>Mental model</strong> — A certificate is a
+<strong>passport</strong>. The photo+name binding is meaningless on its
+own, but a passport is trusted because a government you already trust
+(the CA) signed it with a seal hard to forge. You verify a stranger’s
+passport by recognizing the issuing authority — not by personally
+knowing the traveler. The root CA is the government whose authority you
+accepted before any specific traveler showed up.</p>
+</blockquote>
+<hr />
+<h2 id="short-lived-certificates">4. Short-lived certificates</h2>
+<h3 id="why-short-lived-is-a-security-strategy-not-an-inconvenience">4.1
+Why “short-lived” is a security strategy, not an inconvenience</h3>
+<p>The dangerous thing about any credential is the window during which a
+leaked copy is still useful. A private key valid for 1 year is a
+year-long liability: if it leaks on day 1 and you don’t notice, the
+attacker has 364 days. Revocation is supposed to fix this — but
+revocation is <strong>broken in practice</strong>:</p>
+<ul>
+<li><strong>CRLs</strong> (Certificate Revocation Lists) grow huge and
+are fetched lazily.</li>
+<li><strong>OCSP</strong> adds a latency + availability dependency on
+every connection, and clients “fail open” (accept the cert) when the
+OCSP responder is unreachable — so an attacker who blocks OCSP
+wins.</li>
+</ul>
+<p>Short-lived certificates sidestep revocation entirely: <strong>if a
+cert is only valid for 10 minutes, you don’t need to revoke it — you
+just stop reissuing it.</strong> Validity <em>is</em> the kill switch.
+This is the core idea behind SPIFFE/SPIRE, Istio mTLS, HashiCorp Vault’s
+PKI engine, and cloud workload identity.</p>
+<h3 id="the-machinery-that-makes-it-practical">4.2 The machinery that
+makes it practical</h3>
+<p>Short-lived certs are only viable if issuance is <strong>automated
+and cheap</strong>. The pattern:</p>
+<pre><code>1. Workload generates a fresh key pair locally (private key never leaves the host).
+2. It builds a CSR (Certificate Signing Request) = public key + requested identity,
+   self-signed to prove it holds the matching private key.
+3. It authenticates to an issuing authority using some *bootstrap* identity
+   (a k8s ServiceAccount token, a cloud instance identity doc, a join token).
+4. The CA validates the bootstrap identity, then signs a short-TTL cert.
+5. An agent/sidecar rotates the cert well before expiry (e.g. at 50–80% of TTL).</code></pre>
+<div class="sourceCode" id="cb16"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="co"># A CSR is itself signed by the requester&#39;s private key — proof of possession</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a><span class="ex">openssl</span> req <span class="at">-new</span> <span class="at">-key</span> workload.key <span class="at">-subj</span> <span class="st">&quot;/CN=payments.prod&quot;</span> <span class="at">-out</span> workload.csr</span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a><span class="ex">openssl</span> req <span class="at">-in</span> workload.csr <span class="at">-noout</span> <span class="at">-verify</span> <span class="at">-text</span>   <span class="co"># CSR self-signature checks out</span></span></code></pre></div>
+<p>The chicken-and-egg (“you need an identity to get a credential”) is
+solved by a <strong>bootstrap identity</strong> that the platform can
+attest natively — the node’s cloud identity, or a Kubernetes-projected
+token bound to the pod. The expensive trust handoff happens once;
+everything after is automated rotation.</p>
+<h3 id="where-kubernetes-does-this-for-you">4.3 Where Kubernetes does
+this for you</h3>
+<ul>
+<li><strong>Kubelet TLS bootstrap:</strong> a node joins with a
+bootstrap token, submits a CSR, and the <code>csrapprover</code>
+controller issues its kubelet client cert. <code>kubelet</code> then
+auto-rotates via <code>--rotate-certificates</code>.</li>
+<li><strong>Projected ServiceAccount tokens:</strong> short-lived
+(default ~1h), audience-bound JWTs that expire and are refreshed by the
+kubelet — replacing the old, permanent SA secret tokens.</li>
+<li><strong>Service meshes (Istio/Linkerd):</strong> issue SPIFFE SVID
+certs with ~24h or shorter TTL to every sidecar, rotated
+automatically.</li>
+</ul>
+<blockquote>
+<p><strong>Mental model</strong> — A long-lived secret is a
+<strong>house key</strong>: lose it and you’re rekeying locks
+(revocation) in a panic. A short-lived cert is a <strong>hotel
+keycard</strong>: it self-expires, so a lost card is worthless tomorrow,
+and you never run around changing locks — you just don’t print a new
+card for someone who shouldn’t have one.</p>
+</blockquote>
+<hr />
+<h2 id="the-tls-handshake">5. The TLS handshake</h2>
+<p>TLS gives you three guarantees at once:
+<strong>confidentiality</strong> (eavesdroppers see ciphertext),
+<strong>integrity</strong> (tampering is detected), and
+<strong>authentication</strong> (you’re talking to who you think). The
+handshake is how two strangers go from nothing to a shared symmetric key
+over a hostile network — without ever transmitting that key.</p>
+<h3 id="the-basic-shape">5.1 The basic shape</h3>
+<ol type="1">
+<li>Client says hello, offering supported cipher suites and a fresh
+random.</li>
+<li>Server presents its <strong>certificate</strong> (the
+public-key-to-identity binding from §3) and its own random +
+key-exchange material.</li>
+<li>Both sides run a <strong>Diffie–Hellman</strong> key exchange to
+derive a shared secret <strong>that never crosses the
+wire</strong>.</li>
+<li>They switch to fast symmetric encryption (AES-GCM / ChaCha20) for
+the actual data.</li>
+</ol>
+<p>The certificate authenticates the server; Diffie–Hellman establishes
+the secret; symmetric crypto carries the payload. Asymmetric crypto
+bootstraps, symmetric crypto does the work — exactly as §1
+predicted.</p>
+<h3 id="diffiehellman-the-part-that-feels-like-magic">5.2
+Diffie–Hellman, the part that feels like magic</h3>
+<p>Both parties derive the same secret while an eavesdropper who saw
+every byte cannot. With (elliptic-curve) DH:</p>
+<pre><code>Client picks secret a, sends public  A = a·G   (G = curve base point)
+Server picks secret b, sends public  B = b·G
+Client computes  a·B = a·(b·G)
+Server computes  b·A = b·(a·G)
+Both get  a·b·G  ← the shared secret. Eavesdropper has A, B, G
+                   but recovering a or b is the elliptic-curve
+                   discrete-log problem — infeasible.</code></pre>
+<p>Using a <strong>fresh</strong> <code>a</code>/<code>b</code> per
+connection (<em>ephemeral</em> DH, “ECDHE”) gives <strong>forward
+secrecy</strong>: even if the server’s long-term private key leaks
+later, past sessions stay safe because the session secret was never
+derived from that key — it was thrown away when the connection
+closed.</p>
+<h3 id="tls-1.3-handshake-the-modern-default-packet-by-packet">5.3 TLS
+1.3 handshake (the modern default), packet by packet</h3>
+<pre><code>Client                                                   Server
+  │  ClientHello                                              │
+  │   • supported cipher suites, TLS versions                 │
+  │   • key_share: client&#39;s ephemeral DH public (A)           │
+  │   • client_random                                         │
+  │ ────────────────────────────────────────────────────────►│
+  │                                                           │
+  │                                            ServerHello    │
+  │              • chosen cipher suite                        │
+  │              • key_share: server ephemeral DH public (B)  │
+  │              • server_random                              │
+  │   ── from here on, ENCRYPTED with handshake keys ──       │
+  │              • EncryptedExtensions                        │
+  │              • Certificate           (server&#39;s cert chain)│
+  │              • CertificateVerify     (server SIGNS the    │
+  │                 transcript with its cert&#39;s private key —  │
+  │                 proves it owns the cert, ties §2 to TLS)  │
+  │              • Finished              (MAC over transcript)│
+  │ ◄────────────────────────────────────────────────────────│
+  │  Finished                                                 │
+  │ ────────────────────────────────────────────────────────►│
+  │            Application data (AES-GCM / ChaCha20-Poly1305) │
+  │ ◄═══════════════════════════════════════════════════════►│</code></pre>
+<p>Key TLS 1.3 wins over 1.2:</p>
+<ul>
+<li><strong>1 round-trip (1-RTT)</strong> instead of 2 — both sides send
+key_share in the first flight, so keys are derived immediately. (0-RTT
+resumption exists but has replay caveats.)</li>
+<li><strong>Everything after ServerHello is encrypted</strong>,
+including the certificate.</li>
+<li><strong>Only forward-secret (EC)DHE suites remain</strong> —
+static-RSA key transport is removed, so forward secrecy is mandatory,
+not optional.</li>
+<li>The <code>CertificateVerify</code> step is exactly §2’s digital
+signature: the server signs the handshake transcript, proving it holds
+the private key for the cert it just presented. <strong>This is the
+moment “a certificate” becomes “an authenticated peer.”</strong></li>
+</ul>
+<div class="sourceCode" id="cb19"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Watch a full handshake, see version, cipher, cert chain, and ALPN</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="ex">openssl</span> s_client <span class="at">-connect</span> example.com:443 <span class="at">-servername</span> example.com <span class="at">-tls1_3</span> <span class="at">-msg</span> <span class="op">&lt;</span>/dev/null</span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Confirm forward secrecy: cipher should be ECDHE-based</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a><span class="ex">openssl</span> s_client <span class="at">-connect</span> example.com:443 <span class="op">&lt;</span>/dev/null <span class="dv">2</span><span class="op">&gt;</span>/dev/null <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-i</span> <span class="st">&#39;cipher\|protocol&#39;</span></span></code></pre></div>
+<h3 id="mtls-mutual-tls">5.4 mTLS — mutual TLS</h3>
+<p>In ordinary TLS, only the <strong>server</strong> proves identity. In
+<strong>mutual TLS</strong>, the server also sends a
+<code>CertificateRequest</code>, and the client presents <em>its
+own</em> cert + <code>CertificateVerify</code>. Now
+<strong>both</strong> ends are cryptographically authenticated. This is
+the backbone of zero-trust service-to-service auth — and, as we’ll see,
+of Kubernetes’ own control plane.</p>
+<blockquote>
+<p><strong>Mental model</strong> — A TLS handshake is <strong>two spies
+meeting in the open to agree on a one-time codebook</strong>. They
+publicly mix numbers (Diffie–Hellman) so that only the two of them end
+up with the same secret codebook, even though everyone watched the
+exchange. The certificate is the badge one spy shows to prove they’re
+the real contact and not an impostor; in mTLS, both show badges.</p>
+</blockquote>
+<hr />
+<h2 id="how-kubernetes-handles-security">6. How Kubernetes handles
+security</h2>
+<p>Kubernetes security is best understood as <strong>four sequential
+gates</strong> every request passes through, plus the
+<strong>PKI</strong> that underpins identity and the
+<strong>encryption</strong> that protects data at rest. Get the request
+lifecycle and you’ve got 80% of it.</p>
+<pre><code>kubectl / pod ──► [ TLS + AuthN ] ──► [ AuthZ (RBAC) ] ──► [ Admission ] ──► etcd
+                  who are you?         are you allowed?     is it valid +     (encrypted
+                  (cert / token)       (verb on resource)   policy-compliant?  at rest)</code></pre>
+<h3 id="the-cluster-pki-mtls-everywhere">6.1 The cluster PKI — mTLS
+everywhere</h3>
+<p>Every control-plane component talks over <strong>mutual TLS</strong>,
+anchored by a cluster CA created at bootstrap
+(<code>/etc/kubernetes/pki/ca.crt</code>).</p>
+<div class="sourceCode" id="cb21"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="co"># The whole cluster&#39;s trust fabric lives here</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> /etc/kubernetes/pki/</span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a><span class="co"># ca.crt apiserver.crt apiserver-kubelet-client.crt etcd/ front-proxy-* sa.key sa.pub ...</span></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Check expiry of every control-plane cert (a real on-call task)</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a><span class="ex">kubeadm</span> certs check-expiration</span></code></pre></div>
+<ul>
+<li>The <strong>API server</strong> presents a serving cert to clients
+and uses a client cert to authenticate <strong>to</strong> kubelets and
+etcd.</li>
+<li><strong>etcd</strong> runs its own mTLS; only the API server holds a
+valid client cert, so nothing else can read cluster state directly.</li>
+<li><strong>kubelets</strong> authenticate to the API server with client
+certs (bootstrapped and auto-rotated, §4.3).</li>
+<li>The <code>sa.key</code>/<code>sa.pub</code> pair signs and verifies
+<strong>ServiceAccount tokens</strong> — those JWTs are signatures (§2)
+the API server can validate offline.</li>
+</ul>
+<h3 id="gate-1-authentication-who-are-you">6.2 Gate 1 — Authentication
+(who are you?)</h3>
+<p>The API server authenticates every request via one of:</p>
+<ul>
+<li><strong>Client certificates</strong> — the <code>CN</code> is the
+username, <code>O</code> (organization) fields are groups. Used by
+humans, kubelets, controllers.</li>
+<li><strong>ServiceAccount tokens</strong> — JWTs signed by
+<code>sa.key</code>. Modern clusters use <strong>projected,
+audience-bound, short-lived</strong> tokens (§4.3) instead of permanent
+secrets.</li>
+<li><strong>OIDC / webhook</strong> — delegate to an external IdP (Okta,
+Google, Dex) or cloud IAM.</li>
+</ul>
+<p>Kubernetes has <strong>no user database.</strong> There is no “create
+user” API. Identity is entirely external: a cert your CA signed, or a
+token your IdP issued. This is deliberate — auth is delegated to systems
+built for it.</p>
+<div class="sourceCode" id="cb22"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="co"># What identity does the API server see for me?</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> auth whoami</span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a><span class="co"># See it the hard way: decode your client cert&#39;s subject</span></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> config view <span class="at">--raw</span> <span class="at">-o</span> jsonpath=<span class="st">&#39;{.users[0].user.client-certificate-data}&#39;</span> <span class="dt">\</span></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a>  <span class="kw">|</span> <span class="fu">base64</span> <span class="at">-d</span> <span class="kw">|</span> <span class="ex">openssl</span> x509 <span class="at">-noout</span> <span class="at">-subject</span></span></code></pre></div>
+<h3 id="gate-2-authorization-are-you-allowed">6.3 Gate 2 — Authorization
+(are you allowed?)</h3>
+<p>Once authenticated, <strong>RBAC</strong> decides if <em>this
+identity</em> may perform <em>this verb</em> (<code>get</code>,
+<code>list</code>, <code>create</code>, <code>delete</code>…) on
+<em>this resource</em> in <em>this namespace</em>. Rules are
+<strong>purely additive</strong> — there are no deny rules; you are
+denied by default and grants accumulate.</p>
+<div class="sourceCode" id="cb23"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="co"># The single most useful security command in Kubernetes</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> auth can-i create deployments <span class="at">--namespace</span> prod</span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> auth can-i <span class="st">&#39;*&#39;</span> <span class="st">&#39;*&#39;</span> <span class="at">--as</span> system:serviceaccount:prod:payments   <span class="co"># impersonate to test</span></span></code></pre></div>
+<p><code>Role</code>/<code>RoleBinding</code> are namespaced;
+<code>ClusterRole</code>/<code>ClusterRoleBinding</code> are
+cluster-wide. The discipline is <strong>least privilege</strong>: grant
+the narrowest verb/resource set that works, scope to a namespace, and
+never bind to <code>cluster-admin</code> for convenience.</p>
+<h3 id="gate-3-admission-control-is-it-valid-and-compliant">6.4 Gate 3 —
+Admission control (is it valid and compliant?)</h3>
+<p>After authz, <strong>admission controllers</strong> inspect and can
+mutate or reject the object before it persists:</p>
+<ul>
+<li><strong>Mutating</strong> webhooks rewrite objects (inject sidecars,
+set defaults).</li>
+<li><strong>Validating</strong> webhooks enforce policy (no
+<code>:latest</code> tags, must set resource limits, no privileged
+pods).</li>
+<li><strong>Pod Security Admission</strong> enforces the Pod Security
+Standards (<code>privileged</code> / <code>baseline</code> /
+<code>restricted</code>) per namespace.</li>
+<li>Policy engines (<strong>OPA/Gatekeeper</strong>,
+<strong>Kyverno</strong>) express org rules as code.</li>
+</ul>
+<p>This is where “no container may run as root” or “every image must be
+signed” is <em>enforced</em>, not merely recommended.</p>
+<h3 id="data-at-rest-secrets-and-workload-identity">6.5 Data at rest,
+secrets, and workload identity</h3>
+<ul>
+<li><strong>Secrets</strong> are base64-<em>encoded</em>, not encrypted,
+by default — anyone with <code>get secret</code> RBAC or etcd access
+reads them. Enable <strong>encryption at rest</strong>
+(<code>EncryptionConfiguration</code>) with a KMS provider so etcd
+stores ciphertext.</li>
+<li><strong>Workload identity</strong> lets a pod’s ServiceAccount map
+to a cloud IAM role (IRSA on EKS, Workload Identity on GKE) — pods get
+short-lived cloud credentials with <strong>no static keys</strong> in
+the cluster.</li>
+<li><strong>NetworkPolicies</strong> (enforced by the CNI) restrict
+pod-to-pod traffic; a service mesh adds mTLS so identity is
+cryptographic, not just IP-based.</li>
+</ul>
+<div class="sourceCode" id="cb24"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Verify secrets are actually encrypted in etcd (should NOT be human-readable)</span></span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a><span class="va">ETCDCTL_API</span><span class="op">=</span>3 <span class="ex">etcdctl</span> get /registry/secrets/default/mysecret <span class="dt">\</span></span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">--cacert</span><span class="op">=</span>ca.crt <span class="at">--cert</span><span class="op">=</span>etcd.crt <span class="at">--key</span><span class="op">=</span>etcd.key <span class="kw">|</span> <span class="fu">hexdump</span> <span class="at">-C</span> <span class="kw">|</span> <span class="fu">head</span></span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Look for the &quot;k8s:enc:kms:&quot; prefix → encryption is on</span></span></code></pre></div>
+<blockquote>
+<p><strong>Mental model</strong> — A Kubernetes request runs an
+<strong>airport gauntlet</strong>: TLS is the sealed jet bridge,
+authentication is the <strong>passport check</strong> (who are you),
+authorization is the <strong>boarding pass</strong> (are you ticketed
+for <em>this</em> flight), and admission control is the <strong>security
+screening</strong> (is what you’re carrying allowed). etcd encryption is
+the <strong>locked vault</strong> the manifests are stored in afterward.
+Every gate is independent; failing any one stops you.</p>
+</blockquote>
+<hr />
+<h2 id="how-to-guarantee-security">7. How to <em>guarantee</em>
+security</h2>
+<p>“Is it secure?” is the wrong question — it has no answer. The right
+question is <strong>“secure against whom, doing what?”</strong> Security
+is always relative to a <strong>threat model</strong>. Guaranteeing it
+is a discipline of stating assumptions, enforcing controls, and
+<em>verifying</em> them.</p>
+<h3 id="start-with-a-threat-model">7.1 Start with a threat model</h3>
+<p>Name the adversary and what they can do, then walk each asset. A
+lightweight frame is <strong>STRIDE</strong>: Spoofing, Tampering,
+Repudiation, Information disclosure, Denial of service, Elevation of
+privilege. For each component ask: <em>who could do this, and what
+control stops them?</em></p>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 79%" />
+</colgroup>
+<thead>
+<tr>
+<th>Threat</th>
+<th>The control that addresses it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Spoofing identity</td>
+<td>mTLS / signed tokens (§2, §5.4, §6.2)</td>
+</tr>
+<tr>
+<td>Tampering with data</td>
+<td>Signatures + AEAD integrity (§1, §2)</td>
+</tr>
+<tr>
+<td>Eavesdropping</td>
+<td>TLS confidentiality (§5)</td>
+</tr>
+<tr>
+<td>Stolen long-lived key</td>
+<td>Short-lived certs + forward secrecy (§4, §5.2)</td>
+</tr>
+<tr>
+<td>Over-broad access</td>
+<td>Least-privilege RBAC (§6.3)</td>
+</tr>
+<tr>
+<td>Malicious workload</td>
+<td>Admission + Pod Security + image signing (§6.4)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="defense-in-depth">7.2 Defense in depth</h3>
+<p>No single control is trusted to be perfect. Layer them so a breach of
+one doesn’t cascade: network policy <em>and</em> mTLS <em>and</em> RBAC
+<em>and</em> admission <em>and</em> encryption at rest. The attacker
+must defeat <strong>every</strong> layer; you must hold
+<strong>any</strong> one. That asymmetry is the whole point.</p>
+<h3 id="verify-dont-assume">7.3 Verify, don’t assume</h3>
+<p>A guarantee you haven’t tested is a hope. Make verification
+routine:</p>
+<div class="sourceCode" id="cb25"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Identity &amp; access</span></span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> auth can-i <span class="at">--list</span> <span class="at">--as</span> system:serviceaccount:prod:payments</span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Cert hygiene</span></span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a><span class="ex">kubeadm</span> certs check-expiration</span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Encryption in transit</span></span>
+<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a><span class="ex">testssl.sh</span> https://api.example.com         <span class="co"># cipher suites, TLS versions, forward secrecy</span></span>
+<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a><span class="co"># Supply chain: verify an image signature before trusting it</span></span>
+<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a><span class="ex">cosign</span> verify <span class="at">--key</span> cosign.pub myregistry/payments:1.4.2</span>
+<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Cluster posture against known benchmarks</span></span>
+<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a><span class="ex">kube-bench</span> run <span class="at">--targets</span> master,node       <span class="co"># CIS Kubernetes Benchmark</span></span></code></pre></div>
+<h3 id="the-principles-that-generalize">7.4 The principles that
+generalize</h3>
+<ul>
+<li><strong>Least privilege</strong> — every identity gets the minimum
+it needs, nothing more.</li>
+<li><strong>Zero trust</strong> — authenticate and authorize
+<em>every</em> request; never trust the network. The packet from inside
+the cluster gets the same scrutiny as one from the internet.</li>
+<li><strong>Defense in depth</strong> — independent layers, so one
+failure isn’t fatal.</li>
+<li><strong>Fail closed</strong> — when a control can’t make a decision,
+deny. (The opposite of OCSP fail-open.)</li>
+<li><strong>Reduce the blast radius</strong> — short TTLs, scoped
+tokens, namespace isolation, so a compromise is small and
+self-healing.</li>
+<li><strong>Verifiable, not assumed</strong> — if you can’t test the
+guarantee, you don’t have it.</li>
+</ul>
+<blockquote>
+<p><strong>Mental model</strong> — You cannot prove a system is
+<em>secure</em> — only that it resists <em>a specified attacker</em>. So
+security work is <strong>threat model → layered controls → continuous
+verification</strong>, on repeat. Think like a castle: you don’t build
+one infinitely tall wall, you build a moat, an outer wall, an inner
+keep, and a watch that actually checks — because you assume each layer
+will eventually be tested.</p>
+</blockquote>
+    <div class="phase-nav-foot">
+        <a href="phase5-interview-prep.html"><span class="label">&larr; previous</span>Phase 5 — Interview Prep</a>
+          </div>
+  </div>
+
+<footer class="site-footer">
+  senior cloud engineer study system — generated reference material, not affiliated with any employer
+</footer>
+
+</body>
+</html>

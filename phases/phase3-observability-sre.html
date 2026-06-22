@@ -20,6 +20,7 @@
       <a href="../phases/phase3-observability-sre.html" class="active">03 observability</a>
       <a href="../phases/phase4-architecture-design.html">04 architecture</a>
       <a href="../phases/phase5-interview-prep.html">05 interview</a>
+      <a href="../phases/security-concepts.html">security</a>
     </nav>
   </div>
 </div>
@@ -63,7 +64,7 @@ answer different questions:</p>
 <col style="width: 13%" />
 </colgroup>
 <thead>
-<tr class="header">
+<tr>
 <th>Signal</th>
 <th>Question answered</th>
 <th>Cardinality</th>
@@ -71,25 +72,25 @@ answer different questions:</p>
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td>Metrics</td>
 <td>What is happening? At what rate?</td>
 <td>Low</td>
 <td>Low</td>
 </tr>
-<tr class="even">
+<tr>
 <td>Logs</td>
 <td>What happened for this specific event?</td>
 <td>High</td>
 <td>Medium</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>Traces</td>
 <td>Where in the call graph did this request slow down?</td>
 <td>Medium</td>
 <td>Medium</td>
 </tr>
-<tr class="even">
+<tr>
 <td>Profiles</td>
 <td>Which line of code is consuming this CPU/memory?</td>
 <td>Very high</td>
@@ -565,7 +566,7 @@ rate</li>
 budget):</strong></p>
 <table>
 <thead>
-<tr class="header">
+<tr>
 <th>Severity</th>
 <th>Burn rate</th>
 <th>Alert window</th>
@@ -574,28 +575,28 @@ budget):</strong></p>
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td>Page</td>
 <td>14.4×</td>
 <td>1h</td>
 <td>2% in 1h</td>
 <td>Immediate response</td>
 </tr>
-<tr class="even">
+<tr>
 <td>Page</td>
 <td>6×</td>
 <td>6h</td>
 <td>5% in 6h</td>
 <td>Urgent response</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>Ticket</td>
 <td>3×</td>
 <td>1d</td>
 <td>10% in 1d</td>
 <td>Fix within 1 day</td>
 </tr>
-<tr class="even">
+<tr>
 <td>Ticket</td>
 <td>1×</td>
 <td>3d</td>
@@ -764,12 +765,12 @@ class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb33-1">
 <span id="cb33-34"><a href="#cb33-34" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Took 7 minutes from alert to identifying OOMKill (runbook gap)</span>
 <span id="cb33-35"><a href="#cb33-35" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb33-36"><a href="#cb33-36" aria-hidden="true" tabindex="-1"></a><span class="fu">## Action items</span></span>
-<span id="cb33-37"><a href="#cb33-37" aria-hidden="true" tabindex="-1"></a>| Item | Owner | Priority | Due |</span>
-<span id="cb33-38"><a href="#cb33-38" aria-hidden="true" tabindex="-1"></a>|------|-------|----------|-----|</span>
-<span id="cb33-39"><a href="#cb33-39" aria-hidden="true" tabindex="-1"></a>| Add alert: memory.current &gt; 80% of memory.limit for 5m | @platform | P1 | 2024-07-01 |</span>
-<span id="cb33-40"><a href="#cb33-40" aria-hidden="true" tabindex="-1"></a>| Add Helm diff to deployment pipeline highlighting resource changes | @platform | P2 | 2024-07-15 |</span>
-<span id="cb33-41"><a href="#cb33-41" aria-hidden="true" tabindex="-1"></a>| Write OOMKill diagnosis runbook | @oncall | P2 | 2024-07-08 |</span>
-<span id="cb33-42"><a href="#cb33-42" aria-hidden="true" tabindex="-1"></a>| Add VPA recommendation reports to weekly operations review | @team | P3 | 2024-07-22 |</span></code></pre></div>
+<span id="cb33-37"><a href="#cb33-37" aria-hidden="true" tabindex="-1"></a><span class="pp">|</span> Item <span class="pp">|</span> Owner <span class="pp">|</span> Priority <span class="pp">|</span> Due <span class="pp">|</span></span>
+<span id="cb33-38"><a href="#cb33-38" aria-hidden="true" tabindex="-1"></a><span class="pp">|------|-------|----------|-----|</span></span>
+<span id="cb33-39"><a href="#cb33-39" aria-hidden="true" tabindex="-1"></a><span class="pp">|</span> Add alert: memory.current &gt; 80% of memory.limit for 5m <span class="pp">|</span> @platform <span class="pp">|</span> P1 <span class="pp">|</span> 2024-07-01 <span class="pp">|</span></span>
+<span id="cb33-40"><a href="#cb33-40" aria-hidden="true" tabindex="-1"></a><span class="pp">|</span> Add Helm diff to deployment pipeline highlighting resource changes <span class="pp">|</span> @platform <span class="pp">|</span> P2 <span class="pp">|</span> 2024-07-15 <span class="pp">|</span></span>
+<span id="cb33-41"><a href="#cb33-41" aria-hidden="true" tabindex="-1"></a><span class="pp">|</span> Write OOMKill diagnosis runbook <span class="pp">|</span> @oncall <span class="pp">|</span> P2 <span class="pp">|</span> 2024-07-08 <span class="pp">|</span></span>
+<span id="cb33-42"><a href="#cb33-42" aria-hidden="true" tabindex="-1"></a><span class="pp">|</span> Add VPA recommendation reports to weekly operations review <span class="pp">|</span> @team <span class="pp">|</span> P3 <span class="pp">|</span> 2024-07-22 <span class="pp">|</span></span></code></pre></div>
 <h3 id="chaos-engineering">5.3 Chaos engineering</h3>
 <p><strong>Principles:</strong></p>
 <ol type="1">
@@ -861,38 +862,38 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb35-1"><a href=
 <col style="width: 37%" />
 </colgroup>
 <thead>
-<tr class="header">
+<tr>
 <th>Misconception</th>
 <th>Reality</th>
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td>“We need 100% uptime”</td>
 <td>100% SLO means no deployments ever. 99.9% = 43 min/month of
 budget.</td>
 </tr>
-<tr class="even">
+<tr>
 <td>“Average latency is the right SLI”</td>
 <td>p99 or p99.9 matters. Averages hide the long tail that drives user
 complaints.</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>“More labels = better metrics”</td>
 <td>More labels = more cardinality = more memory = slower queries. Label
 sparingly.</td>
 </tr>
-<tr class="even">
+<tr>
 <td>“Traces replace logs”</td>
 <td>No. Traces show the flow between services. Logs show what happened
 within one service. You need both.</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>“Post-mortems find the person who caused the incident”</td>
 <td>Blameless post-mortems find system conditions that allowed the
 incident to happen.</td>
 </tr>
-<tr class="even">
+<tr>
 <td>“Chaos engineering breaks things”</td>
 <td>Chaos engineering reveals failures that already exist in the system
 before users find them.</td>
@@ -921,7 +922,7 @@ during the experiment. Verify that your service degrades gracefully
 </ol>
 <hr />
 <h2 id="what-to-study-next-phase-4-architecture-design">What to study
-next → <a href="phase4-architecture-design.html">Phase 4 — Architecture
+next → <a href="./phase4-architecture-design.md">Phase 4 — Architecture
 &amp; Design</a></h2>
 <p>Phase 4 moves from building and operating systems to designing them —
 multi-region high availability, platform engineering, FinOps, and

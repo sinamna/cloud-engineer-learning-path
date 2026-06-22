@@ -20,6 +20,7 @@
       <a href="../phases/phase3-observability-sre.html">03 observability</a>
       <a href="../phases/phase4-architecture-design.html">04 architecture</a>
       <a href="../phases/phase5-interview-prep.html">05 interview</a>
+      <a href="../phases/security-concepts.html">security</a>
     </nav>
   </div>
 </div>
@@ -143,46 +144,46 @@ Post-bind (cleanup, metrics, etc.)</code></pre>
 <col style="width: 50%" />
 </colgroup>
 <thead>
-<tr class="header">
+<tr>
 <th>Plugin</th>
 <th>Checks</th>
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td><code>NodeUnschedulable</code></td>
 <td><code>spec.unschedulable == true</code> on node</td>
 </tr>
-<tr class="even">
+<tr>
 <td><code>NodeAffinity</code></td>
 <td><code>requiredDuringScheduling</code> in pod spec</td>
 </tr>
-<tr class="odd">
+<tr>
 <td><code>TaintToleration</code></td>
 <td>Every node taint has a matching toleration</td>
 </tr>
-<tr class="even">
+<tr>
 <td><code>PodTopologySpread</code></td>
 <td><code>topologySpreadConstraints</code> hard rules</td>
 </tr>
-<tr class="odd">
+<tr>
 <td><code>InterPodAffinity</code></td>
 <td><code>requiredDuringSchedulingIgnoredDuringExecution</code>
 anti-affinity</td>
 </tr>
-<tr class="even">
+<tr>
 <td><code>NodeResourcesFit</code></td>
 <td>cpu+memory requested ≤ node allocatable</td>
 </tr>
-<tr class="odd">
+<tr>
 <td><code>VolumeBinding</code></td>
 <td>All PVCs can be satisfied (IPAM, node affinity of PV)</td>
 </tr>
-<tr class="even">
+<tr>
 <td><code>NodePorts</code></td>
 <td>No host port conflicts</td>
 </tr>
-<tr class="odd">
+<tr>
 <td><code>EBSLimits</code></td>
 <td>AWS: max EBS volumes per node</td>
 </tr>
@@ -196,39 +197,39 @@ anti-affinity</td>
 <col style="width: 37%" />
 </colgroup>
 <thead>
-<tr class="header">
+<tr>
 <th>Plugin</th>
 <th>Scoring strategy</th>
 <th>Default weight</th>
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td><code>LeastAllocated</code></td>
 <td>Prefer nodes with lowest allocation ratio</td>
 <td>1</td>
 </tr>
-<tr class="even">
+<tr>
 <td><code>BalancedAllocation</code></td>
 <td>Penalise nodes with unbalanced cpu:memory ratio</td>
 <td>1</td>
 </tr>
-<tr class="odd">
+<tr>
 <td><code>NodeAffinity</code></td>
 <td>Reward matching preferred affinity rules</td>
 <td>2</td>
 </tr>
-<tr class="even">
+<tr>
 <td><code>InterPodAffinity</code></td>
 <td>Reward preferred co-location/anti-affinity</td>
 <td>2</td>
 </tr>
-<tr class="odd">
+<tr>
 <td><code>ImageLocality</code></td>
 <td>Reward nodes that already have the container image</td>
 <td>1</td>
 </tr>
-<tr class="even">
+<tr>
 <td><code>TaintToleration</code></td>
 <td>Reward nodes with fewer untolerated taints</td>
 <td>1</td>
@@ -1074,7 +1075,7 @@ scheduler logs.</li>
 </ol>
 <hr />
 <h2 id="what-to-study-next-phase-3-observability-sre">What to study next
-→ <a href="phase3-observability-sre.html">Phase 3 — Observability &amp;
+→ <a href="./phase3-observability-sre.md">Phase 3 — Observability &amp;
 SRE</a></h2>
 <p>The systems you’ve learned to build in Phase 2 need to be observed
 and operated at scale. Phase 3 covers Prometheus TSDB internals

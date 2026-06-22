@@ -20,6 +20,7 @@
       <a href="../phases/phase3-observability-sre.html">03 observability</a>
       <a href="../phases/phase4-architecture-design.html" class="active">04 architecture</a>
       <a href="../phases/phase5-interview-prep.html">05 interview</a>
+      <a href="../phases/security-concepts.html">security</a>
     </nav>
   </div>
 </div>
@@ -418,7 +419,7 @@ class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb12-1"><a href=
 <p><strong>DORA metrics (DevOps Research and Assessment):</strong></p>
 <table>
 <thead>
-<tr class="header">
+<tr>
 <th>Metric</th>
 <th>Elite</th>
 <th>High</th>
@@ -427,28 +428,28 @@ class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb12-1"><a href=
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td>Deployment frequency</td>
 <td>Multiple/day</td>
 <td>Weekly</td>
 <td>Monthly</td>
 <td>&lt; Monthly</td>
 </tr>
-<tr class="even">
+<tr>
 <td>Lead time for changes</td>
 <td>&lt; 1 hour</td>
 <td>1 day</td>
 <td>1 week</td>
 <td>&gt; 1 month</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>Change failure rate</td>
 <td>&lt; 5%</td>
 <td>10-15%</td>
 <td>16-30%</td>
 <td>&gt; 30%</td>
 </tr>
-<tr class="even">
+<tr>
 <td>Time to restore service</td>
 <td>&lt; 1 hour</td>
 <td>&lt; 1 day</td>
@@ -923,7 +924,7 @@ class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb29-1"><a href=
 <col style="width: 24%" />
 </colgroup>
 <thead>
-<tr class="header">
+<tr>
 <th>Decision</th>
 <th>Option A</th>
 <th>Option B</th>
@@ -932,35 +933,35 @@ class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb29-1"><a href=
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td>Multi-region</td>
 <td>Active-passive</td>
 <td>Active-active</td>
 <td>RTO &gt; 5min, lower budget</td>
 <td>RTO &lt; 2min, global user base, budget allows</td>
 </tr>
-<tr class="even">
+<tr>
 <td>Service mesh</td>
 <td>Istio (sidecar)</td>
 <td>Cilium (eBPF)</td>
 <td>Need rich L7 traffic management</td>
 <td>Already on Cilium CNI, minimise overhead</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>Secrets</td>
 <td>ESO + Vault</td>
 <td>Vault Agent</td>
 <td>Simple secret sync is enough</td>
 <td>Need auto-renewal of dynamic credentials</td>
 </tr>
-<tr class="even">
+<tr>
 <td>Node scaling</td>
 <td>Cluster Autoscaler</td>
 <td>Karpenter</td>
 <td>Need simple, stable ASG management</td>
 <td>Need optimal cost, fast scale-up, consolidation</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>Platform UX</td>
 <td>Backstage</td>
 <td>Custom portal</td>
@@ -992,7 +993,7 @@ simultaneously.</li>
 </ol>
 <hr />
 <h2 id="what-to-study-next-phase-5-interview-prep">What to study next →
-<a href="phase5-interview-prep.html">Phase 5 — Interview Prep</a></h2>
+<a href="./phase5-interview-prep.md">Phase 5 — Interview Prep</a></h2>
 <p>Phase 5 converts everything you’ve learned in Phases 1–4 into
 interview performance: system design under time pressure, behavioral
 questions with STAR format, and a Kubernetes knowledge quiz at

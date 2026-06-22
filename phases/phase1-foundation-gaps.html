@@ -20,6 +20,7 @@
       <a href="../phases/phase3-observability-sre.html">03 observability</a>
       <a href="../phases/phase4-architecture-design.html">04 architecture</a>
       <a href="../phases/phase5-interview-prep.html">05 interview</a>
+      <a href="../phases/security-concepts.html">security</a>
     </nav>
   </div>
 </div>
@@ -134,49 +135,49 @@ process with the illusion of having its own private instance.</p>
 <col style="width: 25%" />
 </colgroup>
 <thead>
-<tr class="header">
+<tr>
 <th>Namespace</th>
 <th><code>clone()</code> flag</th>
 <th>Isolates</th>
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td><code>pid</code></td>
 <td><code>CLONE_NEWPID</code></td>
 <td>Process ID number space</td>
 </tr>
-<tr class="even">
+<tr>
 <td><code>net</code></td>
 <td><code>CLONE_NEWNET</code></td>
 <td>Network stack (interfaces, routes, netfilter, sockets)</td>
 </tr>
-<tr class="odd">
+<tr>
 <td><code>mnt</code></td>
 <td><code>CLONE_NEWNS</code></td>
 <td>Mount point tree</td>
 </tr>
-<tr class="even">
+<tr>
 <td><code>uts</code></td>
 <td><code>CLONE_NEWUTS</code></td>
 <td>Hostname and NIS domain name</td>
 </tr>
-<tr class="odd">
+<tr>
 <td><code>ipc</code></td>
 <td><code>CLONE_NEWIPC</code></td>
 <td>System V IPC, POSIX message queues</td>
 </tr>
-<tr class="even">
+<tr>
 <td><code>user</code></td>
 <td><code>CLONE_NEWUSER</code></td>
 <td>UID/GID mappings</td>
 </tr>
-<tr class="odd">
+<tr>
 <td><code>cgroup</code></td>
 <td><code>CLONE_NEWCGROUP</code></td>
 <td>cgroup root directory view</td>
 </tr>
-<tr class="even">
+<tr>
 <td><code>time</code></td>
 <td><code>CLONE_NEWTIME</code></td>
 <td>Clock offsets (Linux 5.6+)</td>
@@ -373,24 +374,24 @@ off.</p>
 <col style="width: 30%" />
 </colgroup>
 <thead>
-<tr class="header">
+<tr>
 <th>Algorithm</th>
 <th>Strategy</th>
 <th>Best for</th>
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td>Cubic (default pre-5.x)</td>
 <td>Loss-based, cubic growth function</td>
 <td>Datacenter, stable networks</td>
 </tr>
-<tr class="even">
+<tr>
 <td>BBR</td>
 <td>Model-based (estimates BDP), doesn’t rely on loss</td>
 <td>WAN, lossy networks</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>QUIC</td>
 <td>UDP-based, solves head-of-line blocking</td>
 <td>HTTP/3, variable networks</td>
@@ -452,44 +453,44 @@ source or loading modules.</p>
 <col style="width: 39%" />
 </colgroup>
 <thead>
-<tr class="header">
+<tr>
 <th>Hook</th>
 <th>Timing</th>
 <th>Use case</th>
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td>XDP (eXpress Data Path)</td>
 <td>Before sk_buff allocation (earliest possible)</td>
 <td>DDoS mitigation, load balancing</td>
 </tr>
-<tr class="even">
+<tr>
 <td>TC ingress/egress</td>
 <td>After sk_buff, before/after routing</td>
 <td>Packet modification, observability</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>kprobe/kretprobe</td>
 <td>On kernel function entry/return</td>
 <td>Tracing any kernel function</td>
 </tr>
-<tr class="even">
+<tr>
 <td>uprobe/uretprobe</td>
 <td>On user-space function entry/return</td>
 <td>Tracing application code</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>tracepoints</td>
 <td>Stable kernel instrumentation points</td>
 <td>Preferred over kprobes</td>
 </tr>
-<tr class="even">
+<tr>
 <td>LSM hooks</td>
 <td>Linux Security Module hooks</td>
 <td>Security policy enforcement</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>cgroup</td>
 <td>Per-cgroup network hooks</td>
 <td>Per-container policy</td>
@@ -598,7 +599,7 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb23-1"><a href=
 <p><strong>Common CNI plugin comparison:</strong></p>
 <table>
 <thead>
-<tr class="header">
+<tr>
 <th>CNI</th>
 <th>Dataplane</th>
 <th>Overlay</th>
@@ -607,28 +608,28 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb23-1"><a href=
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td>Flannel</td>
 <td>iptables/VXLAN</td>
 <td>VXLAN/host-gw</td>
 <td>No (needs separate)</td>
 <td>No</td>
 </tr>
-<tr class="even">
+<tr>
 <td>Calico</td>
 <td>iptables/eBPF</td>
 <td>VXLAN/IPIP/BGP</td>
 <td>Yes</td>
 <td>Yes</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>Cilium</td>
 <td>eBPF</td>
 <td>VXLAN/Geneve/BGP</td>
 <td>Yes (L7 too)</td>
 <td>Yes</td>
 </tr>
-<tr class="even">
+<tr>
 <td>Weave</td>
 <td>iptables</td>
 <td>VXLAN</td>
@@ -665,44 +666,44 @@ have even if it might be stale</li>
 <p><strong>Practical classification:</strong></p>
 <table>
 <thead>
-<tr class="header">
+<tr>
 <th>System</th>
 <th>Partition choice</th>
 <th>Reasoning</th>
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td>etcd</td>
 <td>CP</td>
 <td>Minority partition stops accepting writes</td>
 </tr>
-<tr class="even">
+<tr>
 <td>ZooKeeper</td>
 <td>CP</td>
 <td>Quorum required for all operations</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>Cassandra</td>
 <td>AP (tunable)</td>
 <td>Quorum level configurable per-operation</td>
 </tr>
-<tr class="even">
+<tr>
 <td>DynamoDB</td>
 <td>AP (default)</td>
 <td>Eventually consistent by default</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>NATS JetStream</td>
 <td>CP</td>
 <td>Raft-based leader election</td>
 </tr>
-<tr class="even">
+<tr>
 <td>Ceph RADOS</td>
 <td>CP</td>
 <td>PG must have quorum of OSDs</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>Consul</td>
 <td>CP</td>
 <td>Raft-based, quorum required</td>
@@ -848,44 +849,44 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb29-1"><a href=
 quorum = ⌊n/2⌋.</p>
 <table>
 <thead>
-<tr class="header">
+<tr>
 <th>Nodes</th>
 <th>Quorum</th>
 <th>Fault tolerance</th>
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td>1</td>
 <td>1</td>
 <td>0</td>
 </tr>
-<tr class="even">
+<tr>
 <td>2</td>
 <td>2</td>
 <td>0</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>3</td>
 <td>2</td>
 <td>1</td>
 </tr>
-<tr class="even">
+<tr>
 <td>4</td>
 <td>3</td>
 <td>1</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>5</td>
 <td>3</td>
 <td>2</td>
 </tr>
-<tr class="even">
+<tr>
 <td>6</td>
 <td>4</td>
 <td>2</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>7</td>
 <td>4</td>
 <td>3</td>
@@ -1145,42 +1146,42 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb39-1"><a href=
 <col style="width: 37%" />
 </colgroup>
 <thead>
-<tr class="header">
+<tr>
 <th>Misconception</th>
 <th>Reality</th>
 </tr>
 </thead>
 <tbody>
-<tr class="odd">
+<tr>
 <td>“Containers are isolated from the host kernel”</td>
 <td>They share the host kernel. A container syscall goes to the same
 kernel.</td>
 </tr>
-<tr class="even">
+<tr>
 <td>“CPU limits protect performance”</td>
 <td>CPU limits cause throttling — periodic execution freezes. Requests
 are for scheduling; limits are for caps.</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>“CAP means pick 2 of 3”</td>
 <td>P is mandatory. The choice is C vs A during a partition only.</td>
 </tr>
-<tr class="even">
+<tr>
 <td>“Raft is always safe”</td>
 <td>Raft requires correct clock assumptions. Clock skew beyond election
 timeout causes unnecessary elections.</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>“SSD I/O is always fast”</td>
 <td>SSDs have garbage collection pauses (latency spikes), write
 amplification, and thermal throttling under sustained load.</td>
 </tr>
-<tr class="even">
+<tr>
 <td>“etcd is a key-value store”</td>
 <td>It’s a distributed consensus system with a key-value interface. The
 consensus layer is the important part.</td>
 </tr>
-<tr class="odd">
+<tr>
 <td>“eBPF is just for debugging”</td>
 <td>eBPF powers production load balancers (Cilium), security enforcement
 (Falco), and network policy at hyperscaler scale.</td>
@@ -1210,7 +1211,7 @@ with <code>iotop</code>.</li>
 </ol>
 <hr />
 <h2 id="what-to-study-next-phase-2-kubernetes-mastery">What to study
-next → <a href="phase2-kubernetes-mastery.html">Phase 2 — Kubernetes
+next → <a href="./phase2-kubernetes-mastery.md">Phase 2 — Kubernetes
 Mastery</a></h2>
 <p>Everything in Phase 2 is built on Phase 1 primitives: the scheduler
 uses cgroups and namespaces; etcd uses Raft; CNI plugins use network
