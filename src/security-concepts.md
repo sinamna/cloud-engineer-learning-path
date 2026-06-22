@@ -20,50 +20,50 @@
 ## Topic map
 
 <div class="topic-legend">
-  <span><span class="swatch" style="background:#6aa6ff"></span>Core concept</span>
-  <span><span class="swatch" style="background:#e8b84e"></span>Interview hot topic</span>
-  <span><span class="swatch" style="background:#b18cff"></span>Architecture depth</span>
-  <span><span class="swatch" style="background:#e87a4e"></span>Gap to close</span>
-  <span><span class="swatch" style="background:#4ee8a0"></span>Hands-on practice</span>
+<span><span class="swatch" style="background:#6aa6ff"></span>Core concept</span>
+<span><span class="swatch" style="background:#e8b84e"></span>Interview hot topic</span>
+<span><span class="swatch" style="background:#b18cff"></span>Architecture depth</span>
+<span><span class="swatch" style="background:#e87a4e"></span>Gap to close</span>
+<span><span class="swatch" style="background:#4ee8a0"></span>Hands-on practice</span>
 </div>
 
 <div class="topic-grid">
-  <div class="topic-card">
-    <h4>Cryptographic primitives</h4>
-    <div class="tags"><span class="cat cat-core">Core concept</span></div>
-  </div>
-  <div class="topic-card">
-    <h4>Digital signatures</h4>
-    <div class="tags"><span class="cat cat-core">Core concept</span><span class="cat cat-interview">Interview hot topic</span></div>
-  </div>
-  <div class="topic-card">
-    <h4>Certificates &amp; PKI</h4>
-    <div class="tags"><span class="cat cat-core">Core concept</span><span class="cat cat-gap">Gap to close</span></div>
-  </div>
-  <div class="topic-card">
-    <h4>Short-lived certificates</h4>
-    <div class="tags"><span class="cat cat-arch">Architecture depth</span><span class="cat cat-gap">Gap to close</span></div>
-  </div>
-  <div class="topic-card">
-    <h4>TLS handshake</h4>
-    <div class="tags"><span class="cat cat-core">Core concept</span><span class="cat cat-interview">Interview hot topic</span></div>
-  </div>
-  <div class="topic-card">
-    <h4>Kubernetes PKI &amp; mTLS</h4>
-    <div class="tags"><span class="cat cat-arch">Architecture depth</span><span class="cat cat-interview">Interview hot topic</span></div>
-  </div>
-  <div class="topic-card">
-    <h4>Identity &amp; authentication</h4>
-    <div class="tags"><span class="cat cat-arch">Architecture depth</span><span class="cat cat-gap">Gap to close</span></div>
-  </div>
-  <div class="topic-card">
-    <h4>Authorization &amp; admission</h4>
-    <div class="tags"><span class="cat cat-arch">Architecture depth</span></div>
-  </div>
-  <div class="topic-card">
-    <h4>Guaranteeing security</h4>
-    <div class="tags"><span class="cat cat-arch">Architecture depth</span><span class="cat cat-practice">Hands-on practice</span></div>
-  </div>
+<div class="topic-card">
+<h4>Cryptographic primitives</h4>
+<div class="tags"><span class="cat cat-core">Core concept</span></div>
+</div>
+<div class="topic-card">
+<h4>Digital signatures</h4>
+<div class="tags"><span class="cat cat-core">Core concept</span><span class="cat cat-interview">Interview hot topic</span></div>
+</div>
+<div class="topic-card">
+<h4>Certificates &amp; PKI</h4>
+<div class="tags"><span class="cat cat-core">Core concept</span><span class="cat cat-gap">Gap to close</span></div>
+</div>
+<div class="topic-card">
+<h4>Short-lived certificates</h4>
+<div class="tags"><span class="cat cat-arch">Architecture depth</span><span class="cat cat-gap">Gap to close</span></div>
+</div>
+<div class="topic-card">
+<h4>TLS handshake</h4>
+<div class="tags"><span class="cat cat-core">Core concept</span><span class="cat cat-interview">Interview hot topic</span></div>
+</div>
+<div class="topic-card">
+<h4>Kubernetes PKI &amp; mTLS</h4>
+<div class="tags"><span class="cat cat-arch">Architecture depth</span><span class="cat cat-interview">Interview hot topic</span></div>
+</div>
+<div class="topic-card">
+<h4>Identity &amp; authentication</h4>
+<div class="tags"><span class="cat cat-arch">Architecture depth</span><span class="cat cat-gap">Gap to close</span></div>
+</div>
+<div class="topic-card">
+<h4>Authorization &amp; admission</h4>
+<div class="tags"><span class="cat cat-arch">Architecture depth</span></div>
+</div>
+<div class="topic-card">
+<h4>Guaranteeing security</h4>
+<div class="tags"><span class="cat cat-arch">Architecture depth</span><span class="cat cat-practice">Hands-on practice</span></div>
+</div>
 </div>
 
 ---
