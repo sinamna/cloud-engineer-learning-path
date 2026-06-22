@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 4 — Architecture & Design — Senior Cloud Engineer Study System</title>
+<meta name="description" content="Multi-region HA, platform engineering, FinOps, zero-trust security">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a href="../index.html" class="topbar-brand"><span class="dot"></span>cloud-engineer-deepdive</a>
+    <nav class="topbar-nav">
+      <a href="../index.html">index</a>
+      <a href="../phases/phase1-foundation-gaps.html">01 foundation</a>
+      <a href="../phases/phase2-kubernetes-mastery.html">02 kubernetes</a>
+      <a href="../phases/phase3-observability-sre.html">03 observability</a>
+      <a href="../phases/phase4-architecture-design.html" class="active">04 architecture</a>
+      <a href="../phases/phase5-interview-prep.html">05 interview</a>
+    </nav>
+  </div>
+</div>
+
+<div class="page-wrap">
+  <div class="doc-eyebrow">04 / 05 — architecture</div>
+<h1 id="phase-4-architecture-design">Phase 4 — Architecture &amp;
+Design</h1>
+<h2
+id="multi-region-ha-platform-engineering-finops-zero-trust-security">Multi-Region
+HA, Platform Engineering, FinOps, Zero-Trust Security</h2>
+<blockquote>
+<p>Architecture is the set of decisions that are hardest to change
+later. This phase teaches you to make them deliberately, with full
+awareness of tradeoffs.</p>
+</blockquote>
+<hr />
+<h2 id="learning-objectives">Learning objectives</h2>
+<ul>
+<li>Design a multi-region platform from first principles, with justified
+tradeoffs</li>
+<li>Define what an Internal Developer Platform is and design one that
+reduces cognitive load</li>
+<li>Reduce Kubernetes infrastructure cost by 30–50% using Karpenter,
+Spot, and rightsizing</li>
+<li>Architect a zero-trust security model from workload identity through
+to secrets management</li>
+</ul>
+<p><strong>Estimated study time:</strong> 4–5 days</p>
+<hr />
+<h2 id="multi-region-high-availability">1. Multi-region high
+availability</h2>
+<h3 id="why-multi-region-and-what-youre-actually-protecting-against">1.1
+Why multi-region and what you’re actually protecting against</h3>
+<p>Multi-region protects against events that affect an entire cloud
+region: natural disasters, major power failures, regional network
+outages, and — more commonly — regional service degradations (AWS
+us-east-1 has had multiple significant partial outages).</p>
+<p><strong>What multi-region does NOT protect against:</strong> -
+Application bugs (a bad deploy hits all regions simultaneously) - DNS
+failures (your domain’s DNS is a single point of failure) - Control
+plane issues (if you use a single global management cluster) - Human
+error at scale (terraform apply in the wrong workspace)</p>
+<p><strong>Cost of multi-region:</strong> Roughly 2× infrastructure cost
+for active-passive, potentially 2× for active-active (depends on traffic
+distribution). Multi-region also multiplies operational complexity: you
+need automated failover, data synchronisation, observability across
+regions, and regular failover drills.</p>
+<p><strong>The key question before going multi-region:</strong> Have you
+made the most of a single region first? Multi-AZ deployment with proper
+Pod Disruption Budgets and anti-affinity rules gives you significant
+resilience at much lower cost and complexity.</p>
+<h3 id="rpo-and-rto-the-requirements-that-drive-architecture">1.2 RPO
+and RTO — the requirements that drive architecture</h3>
+<p><strong>RPO (Recovery Point Objective):</strong> Maximum acceptable
+data loss. Answers: “How old can our data be after recovery?”</p>
+<p><strong>RTO (Recovery Time Objective):</strong> Maximum acceptable
+downtime. Answers: “How long can we be unavailable?”</p>
+<pre><code>RPO = 0:
+  → Synchronous replication required
+  → Every write must be confirmed on multiple regions before returning success
+  → Adds round-trip latency to every write (typically 20–80ms cross-region)
+  → Often not acceptable for interactive applications
+
+RPO = 5 minutes:
+  → Asynchronous replication with a 5-minute lag acceptable
+  → Writes are fast (no cross-region blocking)
+  → Maximum 5 minutes of data loss if primary fails
+  → Used for most databases in multi-region setups
+
+RPO = hours/days:
+  → Backup-restore model
+  → Cheapest option
+  → Acceptable for batch workloads, non-critical data</code></pre>
+<pre><code>RTO = seconds:
+  → Automatic failover, pre-warmed secondary, DNS TTL already set to low value
+  → Active-active or very warm active-passive
+  → Highest cost
+
+RTO = minutes (5–15):
+  → Semi-automated failover: health checks detect failure, DNS update, application reconfigures
+  → Warm standby
+
+RTO = hours:
+  → Manual failover runbook
+  → Cold standby (scale from zero in secondary)
+  → Lowest cost for multi-region</code></pre>
+<h3 id="active-passive-architecture-in-detail">1.3 Active-passive
+architecture in detail</h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│                     Global Load Balancing                        │
+│   Route53 health checks + latency routing / Global Accelerator  │
+└───────────────────┬─────────────────────────────────────────────┘
+                    │ All traffic (normal operation)
+          ┌─────────▼──────────┐         ┌────────────────────────┐
+          │  Primary Region     │         │  Secondary Region       │
+          │  (e.g., eu-west-1)  │         │  (e.g., eu-central-1)  │
+          │                     │ async   │                        │
+          │  K8s cluster (full) │──repl──▶│  K8s cluster (warm)    │
+          │  Database (primary) │         │  Database (replica)     │
+          │  Full traffic load  │         │  Scaled to 50% capacity │
+          └─────────────────────┘         └────────────────────────┘</code></pre>
+<p><strong>Database replication strategies:</strong></p>
+<pre><code>For PostgreSQL (RDS):
+  - Synchronous streaming replication: secondary gets every WAL segment before commit ACK
+  - Asynchronous streaming replication: faster, but lag possible
+  - AWS RDS Multi-AZ: synchronous, same region (different AZ)
+  - AWS RDS Read Replica in another region: asynchronous (RPO = lag, typically &lt; 1 minute)
+  - Promotion to primary: takes 1–5 minutes (RDS), can be automated
+
+For applications that need global write capability:
+  - CockroachDB: Raft-based, global writes, configurable consistency
+  - PlanetScale (MySQL): Vitess-based, global sharding
+  - DynamoDB Global Tables: multi-region active-active, eventual consistency
+  - Cassandra: tunable consistency, native multi-region support</code></pre>
+<p><strong>Failover DNS strategy:</strong></p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># AWS Route53 health check failover</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Primary record: ALIAS to primary region ALB, failover=PRIMARY</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Secondary record: ALIAS to secondary region ALB, failover=SECONDARY</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Critical: pre-lower DNS TTL BEFORE you need to fail over</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Default TTL might be 300s → change to 30s 24 hours before any planned work</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a><span class="co"># You can&#39;t lower TTL at failover time — old TTL is already cached</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a><span class="ex">aws</span> route53 change-resource-record-sets <span class="at">--hosted-zone-id</span> Z1234 <span class="at">--change-batch</span> <span class="st">&#39;{</span></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a><span class="st">  &quot;Changes&quot;: [{</span></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;Action&quot;: &quot;UPSERT&quot;,</span></span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;ResourceRecordSet&quot;: {</span></span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a><span class="st">      &quot;Name&quot;: &quot;api.example.com&quot;,</span></span>
+<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a><span class="st">      &quot;Type&quot;: &quot;A&quot;,</span></span>
+<span id="cb5-15"><a href="#cb5-15" aria-hidden="true" tabindex="-1"></a><span class="st">      &quot;TTL&quot;: 30,</span></span>
+<span id="cb5-16"><a href="#cb5-16" aria-hidden="true" tabindex="-1"></a><span class="st">      &quot;ResourceRecords&quot;: [{&quot;Value&quot;: &quot;&lt;secondary-lb-ip&gt;&quot;}]</span></span>
+<span id="cb5-17"><a href="#cb5-17" aria-hidden="true" tabindex="-1"></a><span class="st">    }</span></span>
+<span id="cb5-18"><a href="#cb5-18" aria-hidden="true" tabindex="-1"></a><span class="st">  }]</span></span>
+<span id="cb5-19"><a href="#cb5-19" aria-hidden="true" tabindex="-1"></a><span class="st">}&#39;</span></span>
+<span id="cb5-20"><a href="#cb5-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-21"><a href="#cb5-21" aria-hidden="true" tabindex="-1"></a><span class="co"># Verify propagation</span></span>
+<span id="cb5-22"><a href="#cb5-22" aria-hidden="true" tabindex="-1"></a><span class="ex">dig</span> +short api.example.com @8.8.8.8</span></code></pre></div>
+<h3 id="active-active-architecture">1.4 Active-active architecture</h3>
+<p>Active-active requires solving conflict resolution: two regions can
+both write, so what happens when they write to the same record
+simultaneously?</p>
+<p><strong>Approaches:</strong></p>
+<ol type="1">
+<li><p><strong>Geo-routing + data partitioning:</strong> Route users to
+the region that “owns” their data. European users → EU region (their
+data lives there). APAC users → APAC region. No conflict because data is
+sharded by user/geography.</p></li>
+<li><p><strong>Last-write-wins (LWW):</strong> Each write carries a
+timestamp (logical clock). During convergence, the highest timestamp
+wins. Simple, but can silently drop writes.</p></li>
+<li><p><strong>CRDTs (Conflict-free Replicated Data Types):</strong>
+Data structures that can be merged without conflicts. Counters, sets,
+registers with specific merge semantics. Limited applicability but
+correct.</p></li>
+<li><p><strong>Application-level conflict resolution:</strong>
+Application knows domain semantics. E.g., for a bank: debits always win;
+concurrent credits are both applied (additive operations commute, so no
+conflict).</p></li>
+</ol>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co"># DynamoDB Global Tables (active-active, eventually consistent)</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="at">aws dynamodb create-global-table \</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="at">  --global-table-name orders \</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="at">  --replication-group &#39;[{&quot;RegionName&quot;:&quot;eu-west-1&quot;},{&quot;RegionName&quot;:&quot;eu-central-1&quot;}]&#39;</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a><span class="co"># CockroachDB: true serialisable, multi-region</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a><span class="at">CREATE DATABASE orders PRIMARY REGION &quot;eu-west&quot; REGIONS &quot;eu-west&quot;, &quot;eu-central&quot;;</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a><span class="at">ALTER TABLE orders ADD COLUMN region crdb_internal_region AS (gateway_region()) STORED;</span></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a><span class="at">ALTER TABLE orders SET LOCALITY REGIONAL BY ROW;</span></span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a><span class="co"># Writes to eu-west rows go to eu-west nodes; eu-central rows go to eu-central</span></span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a><span class="co"># Cross-region writes still work but are slower (consensus across regions)</span></span></code></pre></div>
+<h3 id="kubernetes-multi-cluster-patterns">1.5 Kubernetes multi-cluster
+patterns</h3>
+<p><strong>Independent clusters + ApplicationSet (GitOps
+pattern):</strong></p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co"># ArgoCD ApplicationSet: deploy to all production clusters</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> argoproj.io/v1alpha1</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> ApplicationSet</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> myapp</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">namespace</span><span class="kw">:</span><span class="at"> argocd</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">generators</span><span class="kw">:</span></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">clusters</span><span class="kw">:</span></span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">selector</span><span class="kw">:</span></span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">matchLabels</span><span class="kw">:</span></span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a><span class="at">          </span><span class="fu">environment</span><span class="kw">:</span><span class="at"> production</span></span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">template</span><span class="kw">:</span></span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">name</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;{{name}}-myapp&quot;</span></span>
+<span id="cb7-16"><a href="#cb7-16" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb7-17"><a href="#cb7-17" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">project</span><span class="kw">:</span><span class="at"> production</span></span>
+<span id="cb7-18"><a href="#cb7-18" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">source</span><span class="kw">:</span></span>
+<span id="cb7-19"><a href="#cb7-19" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">repoURL</span><span class="kw">:</span><span class="at"> https://github.com/org/helm-charts</span></span>
+<span id="cb7-20"><a href="#cb7-20" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">targetRevision</span><span class="kw">:</span><span class="at"> HEAD</span></span>
+<span id="cb7-21"><a href="#cb7-21" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">path</span><span class="kw">:</span><span class="at"> charts/myapp</span></span>
+<span id="cb7-22"><a href="#cb7-22" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">helm</span><span class="kw">:</span></span>
+<span id="cb7-23"><a href="#cb7-23" aria-hidden="true" tabindex="-1"></a><span class="at">          </span><span class="fu">valueFiles</span><span class="kw">:</span></span>
+<span id="cb7-24"><a href="#cb7-24" aria-hidden="true" tabindex="-1"></a><span class="at">          </span><span class="kw">-</span><span class="at"> </span><span class="st">&quot;values/{{metadata.labels.region}}.yaml&quot;</span><span class="co">   # Per-region overrides</span></span>
+<span id="cb7-25"><a href="#cb7-25" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">destination</span><span class="kw">:</span></span>
+<span id="cb7-26"><a href="#cb7-26" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">server</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;{{server}}&quot;</span></span>
+<span id="cb7-27"><a href="#cb7-27" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">namespace</span><span class="kw">:</span><span class="at"> production</span></span>
+<span id="cb7-28"><a href="#cb7-28" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">syncPolicy</span><span class="kw">:</span></span>
+<span id="cb7-29"><a href="#cb7-29" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">automated</span><span class="kw">:</span></span>
+<span id="cb7-30"><a href="#cb7-30" aria-hidden="true" tabindex="-1"></a><span class="at">          </span><span class="fu">prune</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
+<span id="cb7-31"><a href="#cb7-31" aria-hidden="true" tabindex="-1"></a><span class="at">          </span><span class="fu">selfHeal</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span></code></pre></div>
+<p><strong>Cluster API (cluster lifecycle management):</strong></p>
+<div class="sourceCode" id="cb8"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Define a cluster as a Kubernetes object (infrastructure as code)</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> cluster.x-k8s.io/v1beta1</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> Cluster</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> prod-eu-central-1</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">clusterNetwork</span><span class="kw">:</span></span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">pods</span><span class="kw">:</span><span class="at"> </span><span class="kw">{</span><span class="fu">cidrBlocks</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">&quot;10.128.0.0/14&quot;</span><span class="kw">]}</span></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">services</span><span class="kw">:</span><span class="at"> </span><span class="kw">{</span><span class="fu">cidrBlocks</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">&quot;10.96.0.0/12&quot;</span><span class="kw">]}</span></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">infrastructureRef</span><span class="kw">:</span></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> infrastructure.cluster.x-k8s.io/v1beta2</span></span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">kind</span><span class="kw">:</span><span class="at"> AWSCluster</span></span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">name</span><span class="kw">:</span><span class="at"> prod-eu-central-1</span></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">controlPlaneRef</span><span class="kw">:</span></span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> controlplane.cluster.x-k8s.io/v1beta1</span></span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">kind</span><span class="kw">:</span><span class="at"> KubeadmControlPlane</span></span>
+<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">name</span><span class="kw">:</span><span class="at"> prod-eu-central-1</span></span>
+<span id="cb8-18"><a href="#cb8-18" aria-hidden="true" tabindex="-1"></a><span class="pp">---</span></span>
+<span id="cb8-19"><a href="#cb8-19" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> infrastructure.cluster.x-k8s.io/v1beta2</span></span>
+<span id="cb8-20"><a href="#cb8-20" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> AWSCluster</span></span>
+<span id="cb8-21"><a href="#cb8-21" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb8-22"><a href="#cb8-22" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> prod-eu-central-1</span></span>
+<span id="cb8-23"><a href="#cb8-23" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb8-24"><a href="#cb8-24" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">region</span><span class="kw">:</span><span class="at"> eu-central-1</span></span>
+<span id="cb8-25"><a href="#cb8-25" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">sshKeyName</span><span class="kw">:</span><span class="at"> prod-keypair</span></span>
+<span id="cb8-26"><a href="#cb8-26" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">network</span><span class="kw">:</span></span>
+<span id="cb8-27"><a href="#cb8-27" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">vpc</span><span class="kw">:</span><span class="at"> </span><span class="kw">{</span><span class="fu">cidrBlock</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;10.20.0.0/16&quot;</span><span class="kw">}</span></span></code></pre></div>
+<hr />
+<h2 id="platform-engineering">2. Platform engineering</h2>
+<h3 id="what-platform-engineering-is-and-what-it-isnt">2.1 What platform
+engineering is — and what it isn’t</h3>
+<p><strong>It is NOT:</strong> Renaming your DevOps or infrastructure
+team, building a portal for the sake of it, or forcing a specific
+toolset on development teams.</p>
+<p><strong>It IS:</strong> Treating your internal customers (development
+teams) as product users, building self-service capabilities that reduce
+cognitive load, and measuring success by developer productivity metrics
+(DORA), not by uptime.</p>
+<p><strong>The cognitive load problem:</strong></p>
+<p>A developer deploying a service in a typical organisation needs to
+understand: Kubernetes deployment manifests, Helm charts, ArgoCD sync
+status, Terraform for cloud resources, Prometheus metric
+instrumentation, Alertmanager routing, certificate management, secret
+management, NetworkPolicy, RBAC, cost attribution, and so on.</p>
+<p>A platform team’s job is to abstract this into: “write a service,
+define what it needs, push to Git.”</p>
+<h3 id="internal-developer-platform-idp-components">2.2 Internal
+Developer Platform (IDP) components</h3>
+<pre><code>┌─────────────────────────────────────────────────────┐
+│              Developer Portal (Backstage)             │
+│    Service catalog | TechDocs | Scaffolder templates │
+└──────────────────────────┬──────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────┐
+│                  Golden Paths                         │
+│    Git repo template | CI/CD pipeline | Deployment   │
+└──────────────────────────┬──────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────┐
+│              Self-Service Infrastructure             │
+│   Namespace provisioning | Secret management        │
+│   Database provisioning | Monitoring setup           │
+└──────────────────────────┬──────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────┐
+│           Platform Primitives                         │
+│    Kubernetes | Vault | Prometheus | Istio | CI/CD   │
+└─────────────────────────────────────────────────────┘</code></pre>
+<h3 id="golden-paths-in-practice">2.3 Golden paths in practice</h3>
+<p>A golden path is not a mandate — it’s a heavily worn trail through
+the forest. Teams can go off-path but then own the maintenance
+themselves.</p>
+<p><strong>Anatomy of a golden path for a new service:</strong></p>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Developer runs a scaffolder template in Backstage</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Result: a new Git repo with:</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a><span class="ex">├──</span> src/                      <span class="co"># Application code</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a><span class="ex">├──</span> Dockerfile                <span class="co"># Standard multi-stage build</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a><span class="ex">├──</span> helm/</span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a><span class="ex">│</span>   ├── Chart.yaml</span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a><span class="ex">│</span>   ├── values.yaml           <span class="co"># Defaults (cpu, memory, replicas)</span></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a><span class="ex">│</span>   └── values/</span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a><span class="ex">│</span>       ├── staging.yaml</span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a><span class="ex">│</span>       └── production.yaml</span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a><span class="ex">├──</span> .github/workflows/</span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a><span class="ex">│</span>   └── ci.yaml               <span class="co"># Test → build → push → ArgoCD sync</span></span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a><span class="ex">├──</span> catalog-info.yaml         <span class="co"># Backstage catalog entity</span></span>
+<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a><span class="ex">├──</span> monitoring/</span>
+<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a><span class="ex">│</span>   └── alerts.yaml           <span class="co"># Pre-built alert rules (SLO burning rate)</span></span>
+<span id="cb10-17"><a href="#cb10-17" aria-hidden="true" tabindex="-1"></a><span class="ex">└──</span> README.md                 <span class="co"># Auto-generated docs from TechDocs</span></span></code></pre></div>
+<p><strong>Platform-provided defaults (zero developer
+configuration):</strong></p>
+<ul>
+<li><code>PodDisruptionBudget</code> with <code>minAvailable: 1</code> —
+created automatically per Deployment</li>
+<li><code>NetworkPolicy</code> — default deny-all + allow from ingress
+controller</li>
+<li><code>HorizontalPodAutoscaler</code> — default scaling on CPU
+60%</li>
+<li><code>ServiceMonitor</code> — Prometheus scraping configured
+automatically from annotations</li>
+<li><code>ResourceQuota</code> per namespace — prevents runaway resource
+consumption</li>
+<li><code>LimitRange</code> — sets default CPU/memory requests for
+containers that don’t specify</li>
+</ul>
+<h3 id="backstage-in-depth">2.4 Backstage in depth</h3>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Backstage software catalog entity — lives in every service repo</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> backstage.io/v1alpha1</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> Component</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> payment-service</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">description</span><span class="kw">:</span><span class="at"> Processes payment transactions via Stripe and PayPal</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">annotations</span><span class="kw">:</span></span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">github.com/project-slug</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;org/payment-service&quot;</span></span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">backstage.io/techdocs-ref</span><span class="kw">:</span><span class="at"> dir:.</span></span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">prometheus.io/alert-dashboard</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;payment-service-slo&quot;</span></span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">argocd/app-name</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;payment-service&quot;</span></span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">tags</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">golang</span><span class="kw">,</span><span class="at"> grpc</span><span class="kw">,</span><span class="at"> payments</span><span class="kw">,</span><span class="at"> pci-dss</span><span class="kw">]</span></span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">links</span><span class="kw">:</span></span>
+<span id="cb11-14"><a href="#cb11-14" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">url</span><span class="kw">:</span><span class="at"> https://grafana.internal/d/payment</span></span>
+<span id="cb11-15"><a href="#cb11-15" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">title</span><span class="kw">:</span><span class="at"> Grafana dashboard</span></span>
+<span id="cb11-16"><a href="#cb11-16" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">icon</span><span class="kw">:</span><span class="at"> dashboard</span></span>
+<span id="cb11-17"><a href="#cb11-17" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">url</span><span class="kw">:</span><span class="at"> https://argocd.internal/applications/payment-service</span></span>
+<span id="cb11-18"><a href="#cb11-18" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">title</span><span class="kw">:</span><span class="at"> ArgoCD</span></span>
+<span id="cb11-19"><a href="#cb11-19" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">icon</span><span class="kw">:</span><span class="at"> web</span></span>
+<span id="cb11-20"><a href="#cb11-20" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb11-21"><a href="#cb11-21" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">type</span><span class="kw">:</span><span class="at"> service</span></span>
+<span id="cb11-22"><a href="#cb11-22" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">lifecycle</span><span class="kw">:</span><span class="at"> production</span></span>
+<span id="cb11-23"><a href="#cb11-23" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">owner</span><span class="kw">:</span><span class="at"> group:payments-team</span></span>
+<span id="cb11-24"><a href="#cb11-24" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">system</span><span class="kw">:</span><span class="at"> payment-platform</span></span>
+<span id="cb11-25"><a href="#cb11-25" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">dependsOn</span><span class="kw">:</span></span>
+<span id="cb11-26"><a href="#cb11-26" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> component:stripe-integration</span></span>
+<span id="cb11-27"><a href="#cb11-27" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> resource:payments-postgres</span></span>
+<span id="cb11-28"><a href="#cb11-28" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> component:notification-service</span></span>
+<span id="cb11-29"><a href="#cb11-29" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">providesApis</span><span class="kw">:</span></span>
+<span id="cb11-30"><a href="#cb11-30" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> payment-api-v2</span></span>
+<span id="cb11-31"><a href="#cb11-31" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">consumesApis</span><span class="kw">:</span></span>
+<span id="cb11-32"><a href="#cb11-32" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> fraud-detection-api</span></span></code></pre></div>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Backstage scaffolder template for new Go services</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> scaffolder.backstage.io/v1beta3</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> Template</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> golang-service</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">title</span><span class="kw">:</span><span class="at"> New Go Service</span></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">owner</span><span class="kw">:</span><span class="at"> platform-team</span></span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">type</span><span class="kw">:</span><span class="at"> service</span></span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">parameters</span><span class="kw">:</span></span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">title</span><span class="kw">:</span><span class="at"> Service info</span></span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">properties</span><span class="kw">:</span></span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">name</span><span class="kw">:</span></span>
+<span id="cb12-14"><a href="#cb12-14" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">type</span><span class="kw">:</span><span class="at"> string</span></span>
+<span id="cb12-15"><a href="#cb12-15" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">title</span><span class="kw">:</span><span class="at"> Service name</span></span>
+<span id="cb12-16"><a href="#cb12-16" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&#39;^[a-z][a-z0-9-]*$&#39;</span></span>
+<span id="cb12-17"><a href="#cb12-17" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">owner</span><span class="kw">:</span></span>
+<span id="cb12-18"><a href="#cb12-18" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">type</span><span class="kw">:</span><span class="at"> string</span></span>
+<span id="cb12-19"><a href="#cb12-19" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">title</span><span class="kw">:</span><span class="at"> Owner team</span></span>
+<span id="cb12-20"><a href="#cb12-20" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">description</span><span class="kw">:</span></span>
+<span id="cb12-21"><a href="#cb12-21" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">type</span><span class="kw">:</span><span class="at"> string</span></span>
+<span id="cb12-22"><a href="#cb12-22" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">steps</span><span class="kw">:</span></span>
+<span id="cb12-23"><a href="#cb12-23" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">id</span><span class="kw">:</span><span class="at"> fetch</span></span>
+<span id="cb12-24"><a href="#cb12-24" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">name</span><span class="kw">:</span><span class="at"> Fetch template</span></span>
+<span id="cb12-25"><a href="#cb12-25" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">action</span><span class="kw">:</span><span class="at"> fetch:template</span></span>
+<span id="cb12-26"><a href="#cb12-26" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">input</span><span class="kw">:</span></span>
+<span id="cb12-27"><a href="#cb12-27" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">url</span><span class="kw">:</span><span class="at"> ./template</span></span>
+<span id="cb12-28"><a href="#cb12-28" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">values</span><span class="kw">:</span></span>
+<span id="cb12-29"><a href="#cb12-29" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">name</span><span class="kw">:</span><span class="at"> ${{ parameters.name }}</span></span>
+<span id="cb12-30"><a href="#cb12-30" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">owner</span><span class="kw">:</span><span class="at"> ${{ parameters.owner }}</span></span>
+<span id="cb12-31"><a href="#cb12-31" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">id</span><span class="kw">:</span><span class="at"> publish</span></span>
+<span id="cb12-32"><a href="#cb12-32" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">name</span><span class="kw">:</span><span class="at"> Create GitHub repo</span></span>
+<span id="cb12-33"><a href="#cb12-33" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">action</span><span class="kw">:</span><span class="at"> publish:github</span></span>
+<span id="cb12-34"><a href="#cb12-34" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">input</span><span class="kw">:</span></span>
+<span id="cb12-35"><a href="#cb12-35" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">repoUrl</span><span class="kw">:</span><span class="at"> github.com?repo=${{ parameters.name }}&amp;owner=org</span></span>
+<span id="cb12-36"><a href="#cb12-36" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">id</span><span class="kw">:</span><span class="at"> register</span></span>
+<span id="cb12-37"><a href="#cb12-37" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">name</span><span class="kw">:</span><span class="at"> Register in catalog</span></span>
+<span id="cb12-38"><a href="#cb12-38" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">action</span><span class="kw">:</span><span class="at"> catalog:register</span></span>
+<span id="cb12-39"><a href="#cb12-39" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">input</span><span class="kw">:</span></span>
+<span id="cb12-40"><a href="#cb12-40" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">repoContentsUrl</span><span class="kw">:</span><span class="at"> ${{ steps.publish.output.repoContentsUrl }}</span></span>
+<span id="cb12-41"><a href="#cb12-41" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">catalogInfoPath</span><span class="kw">:</span><span class="at"> /catalog-info.yaml</span></span></code></pre></div>
+<h3 id="measuring-platform-success">2.5 Measuring platform success</h3>
+<p><strong>DORA metrics (DevOps Research and Assessment):</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Metric</th>
+<th>Elite</th>
+<th>High</th>
+<th>Medium</th>
+<th>Low</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Deployment frequency</td>
+<td>Multiple/day</td>
+<td>Weekly</td>
+<td>Monthly</td>
+<td>&lt; Monthly</td>
+</tr>
+<tr class="even">
+<td>Lead time for changes</td>
+<td>&lt; 1 hour</td>
+<td>1 day</td>
+<td>1 week</td>
+<td>&gt; 1 month</td>
+</tr>
+<tr class="odd">
+<td>Change failure rate</td>
+<td>&lt; 5%</td>
+<td>10-15%</td>
+<td>16-30%</td>
+<td>&gt; 30%</td>
+</tr>
+<tr class="even">
+<td>Time to restore service</td>
+<td>&lt; 1 hour</td>
+<td>&lt; 1 day</td>
+<td>&lt; 1 week</td>
+<td>&gt; 1 week</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Platform-specific metrics:</strong></p>
+<pre><code>Adoption rate: % of services on the golden path vs custom setups
+Toil reduction: hours/week saved on manual operational tasks (measure before and after)
+Self-service ratio: % of infrastructure requests handled without platform team involvement
+Deployment wait time: time from merge to deployed in production
+Onboarding time: days for a new developer to deploy their first change</code></pre>
+<hr />
+<h2 id="finops-and-cost-optimisation">3. FinOps and cost
+optimisation</h2>
+<h3 id="where-kubernetes-costs-come-from">3.1 Where Kubernetes costs
+come from</h3>
+<p><strong>Compute (typically 60–80% of bill):</strong> - Node instances
+(EC2, GCE, Azure VMs) - Over-provisioned resources (requested but not
+used) - Underutilised nodes (node is running but pods don’t fill it) -
+Wrong instance types (general-purpose when you need
+memory-optimised)</p>
+<p><strong>Storage (10–20%):</strong> - Persistent volumes left behind
+after pod/namespace deletion - Oversized PVCs - Unoptimised storage
+class (io2 EBS where gp3 would suffice)</p>
+<p><strong>Data transfer (5–15%):</strong> - Cross-AZ traffic
+(suprisingly expensive: $0.01/GB in AWS) - Internet egress -
+Inter-cluster traffic in multi-region setups</p>
+<p><strong>Other (5–10%):</strong> - Load balancers (each Service of
+type LoadBalancer creates one) - NAT gateways (per-AZ) -
+Logging/monitoring storage</p>
+<div class="sourceCode" id="cb14"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Install OpenCost</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="ex">helm</span> repo add opencost https://opencost.github.io/opencost-helm-chart</span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a><span class="ex">helm</span> install opencost opencost/opencost <span class="at">-n</span> opencost <span class="at">--create-namespace</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Query costs by namespace</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&quot;http://opencost:9003/allocation?window=7d&amp;aggregate=namespace&quot;</span> <span class="kw">|</span> <span class="ex">jq</span> .</span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Top cost drivers</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&quot;http://opencost:9003/allocation?window=30d&amp;aggregate=label:team&quot;</span> <span class="kw">|</span> <span class="ex">jq</span> <span class="dt">\</span></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>  <span class="st">&#39;.data[0] | to_entries | sort_by(.value.totalCost) | reverse | .[0:10]&#39;</span></span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a><span class="co"># Identify idle resources</span></span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&quot;http://opencost:9003/allocation?window=7d&amp;aggregate=pod&amp;idle=true&quot;</span> <span class="kw">|</span> <span class="ex">jq</span> .</span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a><span class="co"># Cross-AZ traffic costs (requires network logging)</span></span>
+<span id="cb14-16"><a href="#cb14-16" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> get <span class="at">--raw</span> <span class="st">&quot;/api/v1/nodes/&lt;node&gt;/proxy/stats/summary&quot;</span> <span class="kw">|</span> <span class="ex">jq</span> <span class="st">&#39;.pods[].network&#39;</span></span></code></pre></div>
+<h3 id="karpenter-architecture-and-cost-optimisation">3.2 Karpenter —
+architecture and cost optimisation</h3>
+<p><strong>How Karpenter saves money vs Cluster Autoscaler:</strong></p>
+<ol type="1">
+<li><p><strong>Bin-packing:</strong> Karpenter selects the exact
+instance size that fits the pending pods. CA provisions from pre-defined
+groups (which may be over-sized).</p></li>
+<li><p><strong>Instance type diversity:</strong> Karpenter can pick
+<code>c6i.2xlarge</code>, <code>c6a.2xlarge</code>,
+<code>c5.2xlarge</code>, or <code>m6i.xlarge</code> — whatever is
+cheapest at this moment. CA is tied to one instance type per node
+group.</p></li>
+<li><p><strong>Spot consolidation:</strong> Karpenter automatically
+replaces spot nodes with cheaper spot types as prices change.</p></li>
+<li><p><strong>Consolidation:</strong> Karpenter continuously tries to
+reschedule pods onto fewer nodes, terminating underutilised
+ones.</p></li>
+</ol>
+<div class="sourceCode" id="cb15"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Karpenter NodePool — the full spec</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> karpenter.sh/v1</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> NodePool</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> default</span></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">template</span><span class="kw">:</span></span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">labels</span><span class="kw">:</span></span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">managed-by</span><span class="kw">:</span><span class="at"> karpenter</span></span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">nodeClassRef</span><span class="kw">:</span></span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> karpenter.k8s.aws/v1</span></span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">kind</span><span class="kw">:</span><span class="at"> EC2NodeClass</span></span>
+<span id="cb15-15"><a href="#cb15-15" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">name</span><span class="kw">:</span><span class="at"> default</span></span>
+<span id="cb15-16"><a href="#cb15-16" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">requirements</span><span class="kw">:</span></span>
+<span id="cb15-17"><a href="#cb15-17" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">key</span><span class="kw">:</span><span class="at"> kubernetes.io/arch</span></span>
+<span id="cb15-18"><a href="#cb15-18" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">operator</span><span class="kw">:</span><span class="at"> In</span></span>
+<span id="cb15-19"><a href="#cb15-19" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">values</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">&quot;amd64&quot;</span><span class="kw">,</span><span class="at"> </span><span class="st">&quot;arm64&quot;</span><span class="kw">]</span><span class="co">       # arm64 = Graviton = 20% cheaper</span></span>
+<span id="cb15-20"><a href="#cb15-20" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">key</span><span class="kw">:</span><span class="at"> karpenter.sh/capacity-type</span></span>
+<span id="cb15-21"><a href="#cb15-21" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">operator</span><span class="kw">:</span><span class="at"> In</span></span>
+<span id="cb15-22"><a href="#cb15-22" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">values</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">&quot;spot&quot;</span><span class="kw">,</span><span class="at"> </span><span class="st">&quot;on-demand&quot;</span><span class="kw">]</span><span class="co">    # Spot first, on-demand fallback</span></span>
+<span id="cb15-23"><a href="#cb15-23" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">key</span><span class="kw">:</span><span class="at"> karpenter.k8s.aws/instance-category</span></span>
+<span id="cb15-24"><a href="#cb15-24" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">operator</span><span class="kw">:</span><span class="at"> In</span></span>
+<span id="cb15-25"><a href="#cb15-25" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">values</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">&quot;c&quot;</span><span class="kw">,</span><span class="at"> </span><span class="st">&quot;m&quot;</span><span class="kw">,</span><span class="at"> </span><span class="st">&quot;r&quot;</span><span class="kw">]</span><span class="co">         # Compute, memory, general</span></span>
+<span id="cb15-26"><a href="#cb15-26" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">key</span><span class="kw">:</span><span class="at"> karpenter.k8s.aws/instance-generation</span></span>
+<span id="cb15-27"><a href="#cb15-27" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">operator</span><span class="kw">:</span><span class="at"> Gt</span></span>
+<span id="cb15-28"><a href="#cb15-28" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">values</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">&quot;5&quot;</span><span class="kw">]</span><span class="co">                    # Only modern instances</span></span>
+<span id="cb15-29"><a href="#cb15-29" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">taints</span><span class="kw">:</span></span>
+<span id="cb15-30"><a href="#cb15-30" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">key</span><span class="kw">:</span><span class="at"> node.kubernetes.io/not-ready</span></span>
+<span id="cb15-31"><a href="#cb15-31" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">effect</span><span class="kw">:</span><span class="at"> NoSchedule</span></span>
+<span id="cb15-32"><a href="#cb15-32" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">limits</span><span class="kw">:</span></span>
+<span id="cb15-33"><a href="#cb15-33" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">cpu</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;1000&quot;</span></span>
+<span id="cb15-34"><a href="#cb15-34" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">memory</span><span class="kw">:</span><span class="at"> 4000Gi</span></span>
+<span id="cb15-35"><a href="#cb15-35" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">disruption</span><span class="kw">:</span></span>
+<span id="cb15-36"><a href="#cb15-36" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">consolidationPolicy</span><span class="kw">:</span><span class="at"> WhenUnderutilized</span></span>
+<span id="cb15-37"><a href="#cb15-37" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">consolidateAfter</span><span class="kw">:</span><span class="at"> 1m</span></span>
+<span id="cb15-38"><a href="#cb15-38" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">budgets</span><span class="kw">:</span></span>
+<span id="cb15-39"><a href="#cb15-39" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> </span><span class="fu">nodes</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;20%&quot;</span><span class="co">                       # Max 20% disrupted simultaneously</span></span>
+<span id="cb15-40"><a href="#cb15-40" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> </span><span class="fu">nodes</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;0&quot;</span></span>
+<span id="cb15-41"><a href="#cb15-41" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">schedule</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;0 0 * * 1-5&quot;</span></span>
+<span id="cb15-42"><a href="#cb15-42" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">duration</span><span class="kw">:</span><span class="at"> 8h</span><span class="co">                       # No disruption during business hours Mon-Fri</span></span>
+<span id="cb15-43"><a href="#cb15-43" aria-hidden="true" tabindex="-1"></a><span class="pp">---</span></span>
+<span id="cb15-44"><a href="#cb15-44" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> karpenter.k8s.aws/v1</span></span>
+<span id="cb15-45"><a href="#cb15-45" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> EC2NodeClass</span></span>
+<span id="cb15-46"><a href="#cb15-46" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb15-47"><a href="#cb15-47" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> default</span></span>
+<span id="cb15-48"><a href="#cb15-48" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb15-49"><a href="#cb15-49" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">amiFamily</span><span class="kw">:</span><span class="at"> AL2023</span></span>
+<span id="cb15-50"><a href="#cb15-50" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">role</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;KarpenterNodeRole-&lt;cluster&gt;&quot;</span></span>
+<span id="cb15-51"><a href="#cb15-51" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">subnetSelectorTerms</span><span class="kw">:</span></span>
+<span id="cb15-52"><a href="#cb15-52" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">tags</span><span class="kw">:</span></span>
+<span id="cb15-53"><a href="#cb15-53" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">karpenter.sh/discovery</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;&lt;cluster&gt;&quot;</span></span>
+<span id="cb15-54"><a href="#cb15-54" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">securityGroupSelectorTerms</span><span class="kw">:</span></span>
+<span id="cb15-55"><a href="#cb15-55" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">tags</span><span class="kw">:</span></span>
+<span id="cb15-56"><a href="#cb15-56" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">karpenter.sh/discovery</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;&lt;cluster&gt;&quot;</span></span>
+<span id="cb15-57"><a href="#cb15-57" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">blockDeviceMappings</span><span class="kw">:</span></span>
+<span id="cb15-58"><a href="#cb15-58" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">deviceName</span><span class="kw">:</span><span class="at"> /dev/xvda</span></span>
+<span id="cb15-59"><a href="#cb15-59" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">ebs</span><span class="kw">:</span></span>
+<span id="cb15-60"><a href="#cb15-60" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">volumeSize</span><span class="kw">:</span><span class="at"> 50Gi</span></span>
+<span id="cb15-61"><a href="#cb15-61" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">volumeType</span><span class="kw">:</span><span class="at"> gp3</span></span>
+<span id="cb15-62"><a href="#cb15-62" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">throughput</span><span class="kw">:</span><span class="at"> </span><span class="dv">125</span></span>
+<span id="cb15-63"><a href="#cb15-63" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">iops</span><span class="kw">:</span><span class="at"> </span><span class="dv">3000</span></span>
+<span id="cb15-64"><a href="#cb15-64" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">deleteOnTermination</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span></code></pre></div>
+<p><strong>Spot instance interruption handling:</strong></p>
+<p>Spot instances get a 2-minute warning (as a node label and via the
+EC2 Instance Metadata Service). Karpenter watches for this and cordons +
+drains the node, allowing pods to reschedule.</p>
+<p>Your application must: 1. Handle SIGTERM gracefully (drain
+connections, finish in-flight requests) 2. Complete shutdown within
+<code>terminationGracePeriodSeconds</code> (default 30s) 3. Have enough
+replicas that losing one doesn’t violate a PodDisruptionBudget</p>
+<div class="sourceCode" id="cb16"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Ensure PDB is set so node drains don&#39;t cause outages</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> policy/v1</span></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> PodDisruptionBudget</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> api-pdb</span></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">selector</span><span class="kw">:</span></span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">matchLabels</span><span class="kw">:</span></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">app</span><span class="kw">:</span><span class="at"> api</span></span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">minAvailable</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;50%&quot;</span><span class="co">   # Always keep 50% of pods running during disruptions</span></span></code></pre></div>
+<h3 id="rightsizing-the-biggest-win">3.3 Rightsizing — the biggest
+win</h3>
+<p>Over-provisioned resource requests are the largest source of waste in
+most Kubernetes clusters. Developers tend to set requests conservatively
+(or copy from templates) and never revisit them.</p>
+<p><strong>Goldilocks (automated rightsizing
+recommendations):</strong></p>
+<div class="sourceCode" id="cb17"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Install Goldilocks (uses VPA in recommendation mode, no auto-apply)</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="ex">helm</span> repo add fairwinds-stable https://charts.fairwinds.com/stable</span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="ex">helm</span> install goldilocks fairwinds-stable/goldilocks <span class="at">-n</span> goldilocks <span class="at">--create-namespace</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Enable for a namespace</span></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> label namespace production goldilocks.fairwinds.com/enabled=true</span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a><span class="co"># After 24h of data:</span></span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> port-forward svc/goldilocks-dashboard <span class="at">-n</span> goldilocks 8080:80</span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a><span class="co"># Browse to localhost:8080 — shows recommended vs current requests per container</span></span></code></pre></div>
+<p><strong>Manual rightsizing PromQL:</strong></p>
+<pre class="promql"><code># Containers where CPU request is &gt; 3× CPU usage (over-provisioned)
+(
+  sum by(namespace, pod, container) (
+    kube_pod_container_resource_requests{resource=&quot;cpu&quot;}
+  )
+) / (
+  sum by(namespace, pod, container) (
+    rate(container_cpu_usage_seconds_total[24h])
+  )
+) &gt; 3
+
+# Memory request vs actual peak (over 7 days)
+(
+  sum by(namespace, pod, container) (
+    kube_pod_container_resource_requests{resource=&quot;memory&quot;}
+  )
+) / (
+  sum by(namespace, pod, container) (
+    max_over_time(container_memory_working_set_bytes[7d])
+  )
+) &gt; 2
+
+# Containers with zero CPU usage (unused workloads)
+sum by(namespace, pod, container) (
+  rate(container_cpu_usage_seconds_total[24h])
+) == 0</code></pre>
+<h3 id="reserved-instances-and-savings-plans">3.4 Reserved Instances and
+Savings Plans</h3>
+<pre><code>Cost hierarchy (highest to lowest):
+  On-demand: full price, maximum flexibility
+  Spot: 60-90% discount, can be interrupted with 2-min notice
+  Compute Savings Plan: 40-66% discount, 1 or 3 year commitment, any EC2 in any region
+  EC2 Instance RI: 40-72% discount, 1 or 3 year, specific instance family/region/OS
+
+Strategy for most Kubernetes workloads:
+  Baseline (always-on): Compute Savings Plan (flexible, covers any instance type)
+  Variable load above baseline: On-demand (no commitment)
+  Batch/stateless burst: Spot instances
+  Never: 100% on-demand for production at scale</code></pre>
+<div class="sourceCode" id="cb20"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Check Savings Plan coverage</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a><span class="ex">aws</span> ce get-savings-plans-coverage <span class="dt">\</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">--time-period</span> Start=2024-06-01,End=2024-06-30 <span class="dt">\</span></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">--query</span> <span class="st">&#39;SavingsPlansCoverages[*].{Resource:Attributes.instanceType,Coverage:Coverage.CoverageHours.CoverageHoursPercentage}&#39;</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a><span class="co"># See what&#39;s not covered (pure on-demand)</span></span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a><span class="ex">aws</span> ce get-reservation-coverage <span class="dt">\</span></span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">--time-period</span> Start=2024-06-01,End=2024-06-30 <span class="dt">\</span></span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a>  <span class="at">--group-by</span> Type=DIMENSION,Key=INSTANCE_TYPE</span></code></pre></div>
+<hr />
+<h2 id="zero-trust-security">4. Zero-trust security</h2>
+<h3 id="zero-trust-principles">4.1 Zero-trust principles</h3>
+<p><strong>Traditional perimeter security:</strong> “Trust everything
+inside the network. Block everything outside.” One compromised internal
+host → attacker moves laterally freely.</p>
+<p><strong>Zero-trust:</strong> “Never trust, always verify — regardless
+of network location.”</p>
+<p>The three pillars: 1. <strong>Verify explicitly:</strong>
+Authenticate and authorise every connection, every time. No implicit
+trust from network location. 2. <strong>Least privilege:</strong> Each
+workload/user gets exactly what it needs — no more. 3. <strong>Assume
+breach:</strong> Design as if attackers are already inside. Limit blast
+radius.</p>
+<p><strong>Applied to Kubernetes:</strong></p>
+<pre><code>Without zero-trust (default Kubernetes):
+  - Any pod can call any other pod on any port (no NetworkPolicy)
+  - Pods use long-lived static secrets in Kubernetes Secrets (base64 encoded, not encrypted)
+  - Service-to-service connections are unencrypted (HTTP, not HTTPS)
+  - RBAC is often overly permissive (cluster-admin for convenience)
+
+With zero-trust:
+  - Default-deny NetworkPolicy; explicit allow-list
+  - Workload identity (SPIFFE/SPIRE): each pod has a cryptographic identity
+  - mTLS: all service-to-service connections mutually authenticated + encrypted
+  - Dynamic secrets: credentials generated on-demand, short TTL, automatically rotated</code></pre>
+<h3 id="spiffespire-workload-identity">4.2 SPIFFE/SPIRE — workload
+identity</h3>
+<p><strong>SPIFFE (Secure Production Identity Framework for
+Everyone):</strong> A specification for workload identity. Defines: -
+<strong>SPIFFE ID:</strong> A URI identifying a workload:
+<code>spiffe://trust-domain/path/to/workload</code> - <strong>SVID
+(SPIFFE Verifiable Identity Document):</strong> An X.509 certificate or
+JWT that proves a SPIFFE ID</p>
+<p><strong>SPIRE (SPIFFE Runtime Environment):</strong> The reference
+implementation.</p>
+<p><strong>Architecture:</strong></p>
+<pre><code>SPIRE Server (cluster-wide, HA deployment)
+  ├── Issues SVIDs (X.509 certs) to workloads
+  ├── Maintains entry registry (which workloads get which SPIFFE IDs)
+  └── Stores trust bundles (root CAs)
+
+SPIRE Agent (DaemonSet, one per node)
+  ├── Attests the node to the server (k8s_psat attestor uses projected service account token)
+  ├── Receives SVIDs from server
+  └── Exposes SPIFFE Workload API on a unix socket (/run/spire/sockets/agent.sock)
+
+Workload
+  └── Calls Workload API → receives X.509 SVID (certificate + private key)
+  └── Uses SVID for mTLS with other workloads</code></pre>
+<div class="sourceCode" id="cb23"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Install SPIRE in Kubernetes</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> apply <span class="at">-f</span> https://raw.githubusercontent.com/spiffe/spire/main/examples/k8s/simple_psat/spire-namespace.yaml</span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> apply <span class="at">-f</span> spire-server-configmap.yaml</span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> apply <span class="at">-f</span> spire-server-statefulset.yaml</span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> apply <span class="at">-f</span> spire-agent-configmap.yaml</span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> apply <span class="at">-f</span> spire-agent-daemonset.yaml</span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Register workload entries</span></span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> exec <span class="at">-n</span> spire spire-server-0 <span class="at">--</span> <span class="dt">\</span></span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a>  /opt/spire/bin/spire-server entry create <span class="dt">\</span></span>
+<span id="cb23-11"><a href="#cb23-11" aria-hidden="true" tabindex="-1"></a>  <span class="at">-spiffeID</span> spiffe://example.org/ns/production/sa/api-service <span class="dt">\</span></span>
+<span id="cb23-12"><a href="#cb23-12" aria-hidden="true" tabindex="-1"></a>  <span class="at">-parentID</span> spiffe://example.org/k8s-psat/my-cluster/node <span class="dt">\</span></span>
+<span id="cb23-13"><a href="#cb23-13" aria-hidden="true" tabindex="-1"></a>  <span class="at">-selector</span> k8s:ns:production <span class="dt">\</span></span>
+<span id="cb23-14"><a href="#cb23-14" aria-hidden="true" tabindex="-1"></a>  <span class="at">-selector</span> k8s:sa:api-service</span>
+<span id="cb23-15"><a href="#cb23-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-16"><a href="#cb23-16" aria-hidden="true" tabindex="-1"></a><span class="co"># Verify a workload can get an SVID</span></span>
+<span id="cb23-17"><a href="#cb23-17" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> exec <span class="at">-n</span> production api-pod <span class="at">--</span> <span class="dt">\</span></span>
+<span id="cb23-18"><a href="#cb23-18" aria-hidden="true" tabindex="-1"></a>  /opt/spire/bin/spire-agent api fetch x509 <span class="dt">\</span></span>
+<span id="cb23-19"><a href="#cb23-19" aria-hidden="true" tabindex="-1"></a>  <span class="at">-socketPath</span> /run/spire/sockets/agent.sock</span>
+<span id="cb23-20"><a href="#cb23-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-21"><a href="#cb23-21" aria-hidden="true" tabindex="-1"></a><span class="co"># The SVID contains:</span></span>
+<span id="cb23-22"><a href="#cb23-22" aria-hidden="true" tabindex="-1"></a><span class="co"># Subject: spiffe://example.org/ns/production/sa/api-service</span></span>
+<span id="cb23-23"><a href="#cb23-23" aria-hidden="true" tabindex="-1"></a><span class="co"># Valid for: 1 hour (auto-rotated before expiry)</span></span>
+<span id="cb23-24"><a href="#cb23-24" aria-hidden="true" tabindex="-1"></a><span class="co"># Can be used for mTLS (Istio, Linkerd, or custom TLS config)</span></span></code></pre></div>
+<h3 id="service-mesh-options-for-mtls">4.3 Service mesh options for
+mTLS</h3>
+<p><strong>Istio:</strong></p>
+<pre><code>Architecture: sidecar proxy (Envoy) injected into every pod
+              Istiod (control plane): manages certs, xDS config
+
+mTLS mode:
+  PERMISSIVE: accept both mTLS and plain HTTP (migration mode)
+  STRICT: only accept mTLS
+
+Traffic interception:
+  iptables rules redirect all pod traffic through Envoy sidecar
+  Envoy handles mTLS termination/origination transparently
+  Application code doesn&#39;t know about TLS</code></pre>
+<div class="sourceCode" id="cb25"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Enable strict mTLS cluster-wide</span></span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> security.istio.io/v1beta1</span></span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> PeerAuthentication</span></span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> default</span></span>
+<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">namespace</span><span class="kw">:</span><span class="at"> istio-system</span></span>
+<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">mtls</span><span class="kw">:</span></span>
+<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">mode</span><span class="kw">:</span><span class="at"> STRICT</span></span>
+<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-11"><a href="#cb25-11" aria-hidden="true" tabindex="-1"></a><span class="co"># AuthorizationPolicy: only payment-service can call the orders database</span></span>
+<span id="cb25-12"><a href="#cb25-12" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> security.istio.io/v1beta1</span></span>
+<span id="cb25-13"><a href="#cb25-13" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> AuthorizationPolicy</span></span>
+<span id="cb25-14"><a href="#cb25-14" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb25-15"><a href="#cb25-15" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> orders-db-policy</span></span>
+<span id="cb25-16"><a href="#cb25-16" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">namespace</span><span class="kw">:</span><span class="at"> production</span></span>
+<span id="cb25-17"><a href="#cb25-17" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb25-18"><a href="#cb25-18" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">selector</span><span class="kw">:</span></span>
+<span id="cb25-19"><a href="#cb25-19" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">matchLabels</span><span class="kw">:</span></span>
+<span id="cb25-20"><a href="#cb25-20" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">app</span><span class="kw">:</span><span class="at"> orders-db</span></span>
+<span id="cb25-21"><a href="#cb25-21" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">rules</span><span class="kw">:</span></span>
+<span id="cb25-22"><a href="#cb25-22" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">from</span><span class="kw">:</span></span>
+<span id="cb25-23"><a href="#cb25-23" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> </span><span class="fu">source</span><span class="kw">:</span></span>
+<span id="cb25-24"><a href="#cb25-24" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">principals</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">&quot;cluster.local/ns/production/sa/payment-service&quot;</span><span class="kw">]</span></span>
+<span id="cb25-25"><a href="#cb25-25" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">to</span><span class="kw">:</span></span>
+<span id="cb25-26"><a href="#cb25-26" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> </span><span class="fu">operation</span><span class="kw">:</span></span>
+<span id="cb25-27"><a href="#cb25-27" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">ports</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">&quot;5432&quot;</span><span class="kw">]</span></span></code></pre></div>
+<p><strong>Cilium Service Mesh (eBPF-based, no sidecar):</strong></p>
+<div class="sourceCode" id="cb26"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Enable Cilium mTLS (uses SPIFFE/SPIRE or Cilium&#39;s built-in CA)</span></span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a><span class="ex">cilium</span> install <span class="at">--set</span> encryption.enabled=true <span class="at">--set</span> encryption.type=wireguard</span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Or with SPIRE integration</span></span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a><span class="ex">cilium</span> install <span class="dt">\</span></span>
+<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">--set</span> authentication.mutual.spire.enabled=true <span class="dt">\</span></span>
+<span id="cb26-7"><a href="#cb26-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">--set</span> authentication.mutual.spire.install.enabled=true</span>
+<span id="cb26-8"><a href="#cb26-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-9"><a href="#cb26-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Verify mTLS is working</span></span>
+<span id="cb26-10"><a href="#cb26-10" aria-hidden="true" tabindex="-1"></a><span class="ex">cilium</span> monitor <span class="at">--type</span> drop <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-i</span> auth</span>
+<span id="cb26-11"><a href="#cb26-11" aria-hidden="true" tabindex="-1"></a><span class="ex">cilium</span> connectivity test</span></code></pre></div>
+<h3 id="vault-for-secrets-management">4.4 Vault for secrets
+management</h3>
+<p><strong>Why Kubernetes Secrets are insufficient:</strong></p>
+<p>Kubernetes Secrets are base64-encoded (not encrypted) by default in
+etcd. Anyone with <code>kubectl get secret</code> permissions and access
+to etcd can read them. They are static — if a secret leaks, you must
+manually rotate every service that uses it.</p>
+<p><strong>Vault dynamic secrets — the key concept:</strong></p>
+<p>Instead of storing <code>DB_PASSWORD=mypassword</code>, Vault
+generates a new, unique, short-lived credential on demand:</p>
+<pre><code>Service starts → Requests credential from Vault
+Vault → Creates a new PostgreSQL role with a password
+       Returns: username=v-role-xyz123, password=A1b-random, TTL=1h
+Service uses credential for 1 hour
+At 55 min → Vault agent renews the lease (re-issues)
+At end of service lifetime → Vault agent revokes the credential
+Result: credential that only existed while the service was running</code></pre>
+<div class="sourceCode" id="cb28"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Set up Vault with Kubernetes auth</span></span>
+<span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a><span class="ex">vault</span> auth enable kubernetes</span>
+<span id="cb28-3"><a href="#cb28-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb28-4"><a href="#cb28-4" aria-hidden="true" tabindex="-1"></a><span class="ex">vault</span> write auth/kubernetes/config <span class="dt">\</span></span>
+<span id="cb28-5"><a href="#cb28-5" aria-hidden="true" tabindex="-1"></a>  kubernetes_host=<span class="st">&quot;https://kubernetes.default.svc&quot;</span> <span class="dt">\</span></span>
+<span id="cb28-6"><a href="#cb28-6" aria-hidden="true" tabindex="-1"></a>  kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt <span class="dt">\</span></span>
+<span id="cb28-7"><a href="#cb28-7" aria-hidden="true" tabindex="-1"></a>  token_reviewer_jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token</span>
+<span id="cb28-8"><a href="#cb28-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb28-9"><a href="#cb28-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Create a policy for the api-service</span></span>
+<span id="cb28-10"><a href="#cb28-10" aria-hidden="true" tabindex="-1"></a><span class="ex">vault</span> policy write api-service <span class="at">-</span> <span class="op">&lt;&lt;EOF</span></span>
+<span id="cb28-11"><a href="#cb28-11" aria-hidden="true" tabindex="-1"></a><span class="st">path &quot;database/creds/api-service&quot; {</span></span>
+<span id="cb28-12"><a href="#cb28-12" aria-hidden="true" tabindex="-1"></a><span class="st">  capabilities = [&quot;read&quot;]</span></span>
+<span id="cb28-13"><a href="#cb28-13" aria-hidden="true" tabindex="-1"></a><span class="st">}</span></span>
+<span id="cb28-14"><a href="#cb28-14" aria-hidden="true" tabindex="-1"></a><span class="st">path &quot;secret/data/production/api/*&quot; {</span></span>
+<span id="cb28-15"><a href="#cb28-15" aria-hidden="true" tabindex="-1"></a><span class="st">  capabilities = [&quot;read&quot;]</span></span>
+<span id="cb28-16"><a href="#cb28-16" aria-hidden="true" tabindex="-1"></a><span class="st">}</span></span>
+<span id="cb28-17"><a href="#cb28-17" aria-hidden="true" tabindex="-1"></a><span class="op">EOF</span></span>
+<span id="cb28-18"><a href="#cb28-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb28-19"><a href="#cb28-19" aria-hidden="true" tabindex="-1"></a><span class="co"># Bind the policy to a Kubernetes service account</span></span>
+<span id="cb28-20"><a href="#cb28-20" aria-hidden="true" tabindex="-1"></a><span class="ex">vault</span> write auth/kubernetes/role/api-service <span class="dt">\</span></span>
+<span id="cb28-21"><a href="#cb28-21" aria-hidden="true" tabindex="-1"></a>  bound_service_account_names=api-service <span class="dt">\</span></span>
+<span id="cb28-22"><a href="#cb28-22" aria-hidden="true" tabindex="-1"></a>  bound_service_account_namespaces=production <span class="dt">\</span></span>
+<span id="cb28-23"><a href="#cb28-23" aria-hidden="true" tabindex="-1"></a>  policies=api-service <span class="dt">\</span></span>
+<span id="cb28-24"><a href="#cb28-24" aria-hidden="true" tabindex="-1"></a>  ttl=1h</span>
+<span id="cb28-25"><a href="#cb28-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb28-26"><a href="#cb28-26" aria-hidden="true" tabindex="-1"></a><span class="co"># Enable database secrets engine</span></span>
+<span id="cb28-27"><a href="#cb28-27" aria-hidden="true" tabindex="-1"></a><span class="ex">vault</span> secrets enable database</span>
+<span id="cb28-28"><a href="#cb28-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb28-29"><a href="#cb28-29" aria-hidden="true" tabindex="-1"></a><span class="ex">vault</span> write database/config/production-postgres <span class="dt">\</span></span>
+<span id="cb28-30"><a href="#cb28-30" aria-hidden="true" tabindex="-1"></a>  plugin_name=postgresql-database-plugin <span class="dt">\</span></span>
+<span id="cb28-31"><a href="#cb28-31" aria-hidden="true" tabindex="-1"></a>  allowed_roles=<span class="st">&quot;api-service&quot;</span> <span class="dt">\</span></span>
+<span id="cb28-32"><a href="#cb28-32" aria-hidden="true" tabindex="-1"></a>  connection_url=<span class="st">&quot;postgresql://{{username}}:{{password}}@postgres.production:5432/apidb?sslmode=require&quot;</span> <span class="dt">\</span></span>
+<span id="cb28-33"><a href="#cb28-33" aria-hidden="true" tabindex="-1"></a>  username=<span class="st">&quot;vault-root&quot;</span> <span class="dt">\</span></span>
+<span id="cb28-34"><a href="#cb28-34" aria-hidden="true" tabindex="-1"></a>  password=<span class="st">&quot;&lt;root-password&gt;&quot;</span></span>
+<span id="cb28-35"><a href="#cb28-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb28-36"><a href="#cb28-36" aria-hidden="true" tabindex="-1"></a><span class="ex">vault</span> write database/roles/api-service <span class="dt">\</span></span>
+<span id="cb28-37"><a href="#cb28-37" aria-hidden="true" tabindex="-1"></a>  db_name=production-postgres <span class="dt">\</span></span>
+<span id="cb28-38"><a href="#cb28-38" aria-hidden="true" tabindex="-1"></a>  creation_statements=<span class="st">&quot;CREATE ROLE </span><span class="dt">\&quot;</span><span class="st">{{name}}</span><span class="dt">\&quot;</span><span class="st"> WITH LOGIN PASSWORD &#39;{{password}}&#39; VALID UNTIL &#39;{{expiration}}&#39;; GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO </span><span class="dt">\&quot;</span><span class="st">{{name}}</span><span class="dt">\&quot;</span><span class="st">;&quot;</span> <span class="dt">\</span></span>
+<span id="cb28-39"><a href="#cb28-39" aria-hidden="true" tabindex="-1"></a>  default_ttl=<span class="st">&quot;1h&quot;</span> <span class="dt">\</span></span>
+<span id="cb28-40"><a href="#cb28-40" aria-hidden="true" tabindex="-1"></a>  max_ttl=<span class="st">&quot;24h&quot;</span></span>
+<span id="cb28-41"><a href="#cb28-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb28-42"><a href="#cb28-42" aria-hidden="true" tabindex="-1"></a><span class="co"># Test credential generation</span></span>
+<span id="cb28-43"><a href="#cb28-43" aria-hidden="true" tabindex="-1"></a><span class="ex">vault</span> read database/creds/api-service</span></code></pre></div>
+<p><strong>External Secrets Operator (simpler integration):</strong></p>
+<div class="sourceCode" id="cb29"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="co"># ClusterSecretStore: configure the Vault backend once</span></span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> external-secrets.io/v1beta1</span></span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> ClusterSecretStore</span></span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb29-5"><a href="#cb29-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> vault-backend</span></span>
+<span id="cb29-6"><a href="#cb29-6" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb29-7"><a href="#cb29-7" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">provider</span><span class="kw">:</span></span>
+<span id="cb29-8"><a href="#cb29-8" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">vault</span><span class="kw">:</span></span>
+<span id="cb29-9"><a href="#cb29-9" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">server</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;https://vault.internal:8200&quot;</span></span>
+<span id="cb29-10"><a href="#cb29-10" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">path</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;secret&quot;</span></span>
+<span id="cb29-11"><a href="#cb29-11" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">version</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;v2&quot;</span></span>
+<span id="cb29-12"><a href="#cb29-12" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">auth</span><span class="kw">:</span></span>
+<span id="cb29-13"><a href="#cb29-13" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">kubernetes</span><span class="kw">:</span></span>
+<span id="cb29-14"><a href="#cb29-14" aria-hidden="true" tabindex="-1"></a><span class="at">          </span><span class="fu">mountPath</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;kubernetes&quot;</span></span>
+<span id="cb29-15"><a href="#cb29-15" aria-hidden="true" tabindex="-1"></a><span class="at">          </span><span class="fu">role</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;external-secrets&quot;</span></span>
+<span id="cb29-16"><a href="#cb29-16" aria-hidden="true" tabindex="-1"></a><span class="pp">---</span></span>
+<span id="cb29-17"><a href="#cb29-17" aria-hidden="true" tabindex="-1"></a><span class="co"># ExternalSecret: sync specific secrets into Kubernetes</span></span>
+<span id="cb29-18"><a href="#cb29-18" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> external-secrets.io/v1beta1</span></span>
+<span id="cb29-19"><a href="#cb29-19" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> ExternalSecret</span></span>
+<span id="cb29-20"><a href="#cb29-20" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb29-21"><a href="#cb29-21" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> api-service-secrets</span></span>
+<span id="cb29-22"><a href="#cb29-22" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">namespace</span><span class="kw">:</span><span class="at"> production</span></span>
+<span id="cb29-23"><a href="#cb29-23" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb29-24"><a href="#cb29-24" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">refreshInterval</span><span class="kw">:</span><span class="at"> 1h</span></span>
+<span id="cb29-25"><a href="#cb29-25" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">secretStoreRef</span><span class="kw">:</span></span>
+<span id="cb29-26"><a href="#cb29-26" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">name</span><span class="kw">:</span><span class="at"> vault-backend</span></span>
+<span id="cb29-27"><a href="#cb29-27" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">kind</span><span class="kw">:</span><span class="at"> ClusterSecretStore</span></span>
+<span id="cb29-28"><a href="#cb29-28" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">target</span><span class="kw">:</span></span>
+<span id="cb29-29"><a href="#cb29-29" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">name</span><span class="kw">:</span><span class="at"> api-service-secrets</span></span>
+<span id="cb29-30"><a href="#cb29-30" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">creationPolicy</span><span class="kw">:</span><span class="at"> Owner</span></span>
+<span id="cb29-31"><a href="#cb29-31" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">template</span><span class="kw">:</span></span>
+<span id="cb29-32"><a href="#cb29-32" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">data</span><span class="kw">:</span></span>
+<span id="cb29-33"><a href="#cb29-33" aria-hidden="true" tabindex="-1"></a><span class="fu">        config.yaml</span><span class="kw">: </span><span class="ch">|</span></span>
+<span id="cb29-34"><a href="#cb29-34" aria-hidden="true" tabindex="-1"></a>          database:</span>
+<span id="cb29-35"><a href="#cb29-35" aria-hidden="true" tabindex="-1"></a>            url: &quot;postgres://{{ .username }}:{{ .password }}@postgres:5432/apidb&quot;</span>
+<span id="cb29-36"><a href="#cb29-36" aria-hidden="true" tabindex="-1"></a>          redis:</span>
+<span id="cb29-37"><a href="#cb29-37" aria-hidden="true" tabindex="-1"></a>            password: &quot;{{ .redis_password }}&quot;</span>
+<span id="cb29-38"><a href="#cb29-38" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">data</span><span class="kw">:</span></span>
+<span id="cb29-39"><a href="#cb29-39" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">secretKey</span><span class="kw">:</span><span class="at"> username</span></span>
+<span id="cb29-40"><a href="#cb29-40" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">remoteRef</span><span class="kw">:</span></span>
+<span id="cb29-41"><a href="#cb29-41" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">key</span><span class="kw">:</span><span class="at"> production/api-service/database</span></span>
+<span id="cb29-42"><a href="#cb29-42" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">property</span><span class="kw">:</span><span class="at"> username</span></span>
+<span id="cb29-43"><a href="#cb29-43" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">secretKey</span><span class="kw">:</span><span class="at"> password</span></span>
+<span id="cb29-44"><a href="#cb29-44" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">remoteRef</span><span class="kw">:</span></span>
+<span id="cb29-45"><a href="#cb29-45" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">key</span><span class="kw">:</span><span class="at"> production/api-service/database</span></span>
+<span id="cb29-46"><a href="#cb29-46" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">property</span><span class="kw">:</span><span class="at"> password</span></span>
+<span id="cb29-47"><a href="#cb29-47" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">secretKey</span><span class="kw">:</span><span class="at"> redis_password</span></span>
+<span id="cb29-48"><a href="#cb29-48" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">remoteRef</span><span class="kw">:</span></span>
+<span id="cb29-49"><a href="#cb29-49" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">key</span><span class="kw">:</span><span class="at"> production/api-service/redis</span></span>
+<span id="cb29-50"><a href="#cb29-50" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">property</span><span class="kw">:</span><span class="at"> password</span></span></code></pre></div>
+<hr />
+<h2 id="design-tradeoffs-summary">Design tradeoffs summary</h2>
+<table>
+<colgroup>
+<col style="width: 17%" />
+<col style="width: 17%" />
+<col style="width: 17%" />
+<col style="width: 24%" />
+<col style="width: 24%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Decision</th>
+<th>Option A</th>
+<th>Option B</th>
+<th>Choose A when</th>
+<th>Choose B when</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Multi-region</td>
+<td>Active-passive</td>
+<td>Active-active</td>
+<td>RTO &gt; 5min, lower budget</td>
+<td>RTO &lt; 2min, global user base, budget allows</td>
+</tr>
+<tr class="even">
+<td>Service mesh</td>
+<td>Istio (sidecar)</td>
+<td>Cilium (eBPF)</td>
+<td>Need rich L7 traffic management</td>
+<td>Already on Cilium CNI, minimise overhead</td>
+</tr>
+<tr class="odd">
+<td>Secrets</td>
+<td>ESO + Vault</td>
+<td>Vault Agent</td>
+<td>Simple secret sync is enough</td>
+<td>Need auto-renewal of dynamic credentials</td>
+</tr>
+<tr class="even">
+<td>Node scaling</td>
+<td>Cluster Autoscaler</td>
+<td>Karpenter</td>
+<td>Need simple, stable ASG management</td>
+<td>Need optimal cost, fast scale-up, consolidation</td>
+</tr>
+<tr class="odd">
+<td>Platform UX</td>
+<td>Backstage</td>
+<td>Custom portal</td>
+<td>Ecosystem integration matters</td>
+<td>You have unique requirements backstage doesn’t meet</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="hands-on-exercises">Hands-on exercises</h2>
+<ol type="1">
+<li>Design (on paper) a multi-region active-passive architecture for a
+real application. Specify: RPO, RTO, database replication strategy, DNS
+failover approach, runbook, and estimated cost premium vs single
+region.</li>
+<li>Create a Backstage <code>catalog-info.yaml</code> for a real
+service, including dependencies, APIs provided, and links to dashboards.
+Run Backstage locally and verify the entity appears in the catalog.</li>
+<li>Install OpenCost in a test cluster. Identify the top 3 cost drivers.
+Calculate how much would be saved by rightsizing the top 5
+over-provisioned deployments.</li>
+<li>Set up Vault with the Kubernetes auth method. Configure a database
+secrets engine. Write an ExternalSecret that pulls a dynamic credential
+into a Kubernetes Secret. Verify the credential rotates on
+schedule.</li>
+<li>Write an ApplicationSet that deploys to multiple clusters using a
+generator. Verify it deploys correctly to 2+ clusters
+simultaneously.</li>
+</ol>
+<hr />
+<h2 id="what-to-study-next-phase-5-interview-prep">What to study next →
+<a href="phase5-interview-prep.html">Phase 5 — Interview Prep</a></h2>
+<p>Phase 5 converts everything you’ve learned in Phases 1–4 into
+interview performance: system design under time pressure, behavioral
+questions with STAR format, and a Kubernetes knowledge quiz at
+senior/staff level difficulty.</p>
+    <div class="phase-nav-foot">
+        <a href="phase3-observability-sre.html"><span class="label">&larr; previous</span>Phase 3 — Observability & SRE</a>
+            <a href="phase5-interview-prep.html" class="next"><span class="label">next &rarr;</span>Phase 5 — Interview Prep</a>
+      </div>
+  </div>
+
+<footer class="site-footer">
+  senior cloud engineer study system — generated reference material, not affiliated with any employer
+</footer>
+
+</body>
+</html>

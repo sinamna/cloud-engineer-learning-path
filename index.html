@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Senior Cloud Engineer Study System</title>
+<meta name="description" content="A five-phase deep-dive reference covering Linux internals, Kubernetes, observability, architecture, and interview preparation for senior cloud engineering roles.">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:,">
+<style>
+  /* Index-page-specific styles */
+  .hero {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 5rem 1.5rem 3rem;
+    position: relative;
+    z-index: 1;
+  }
+  .hero-kicker {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 1.2rem;
+  }
+  .hero-kicker::before {
+    content: "";
+    width: 18px; height: 1px;
+    background: var(--accent);
+  }
+  .hero h1 {
+    font-family: var(--mono);
+    font-size: clamp(2rem, 5vw, 3.1rem);
+    line-height: 1.1;
+    max-width: 18ch;
+    margin: 0 0 1.4rem;
+    letter-spacing: -0.02em;
+  }
+  .hero h1 .dim { color: var(--text-faint); }
+  .hero p.lede {
+    font-family: var(--serif);
+    font-size: 1.15rem;
+    color: var(--text-dim);
+    max-width: 56ch;
+    line-height: 1.7;
+  }
+  .hero-stats {
+    display: flex;
+    gap: 2.5rem;
+    margin-top: 2.5rem;
+    flex-wrap: wrap;
+    font-family: var(--mono);
+  }
+  .hero-stat .num { font-size: 1.6rem; color: var(--accent); display: block; }
+  .hero-stat .label { font-size: 0.75rem; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.05em; }
+
+  .stack {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 1rem 1.5rem 5rem;
+    position: relative;
+    z-index: 1;
+  }
+  .stack-intro {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 3rem 0 1.5rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--line);
+  }
+
+  /* The signature element: a vertical "stack" of phase layers,
+     like strata / a system boot sequence, each expandable-feeling
+     on hover, numbered like layers in a stack trace rather than
+     a generic numbered list — order here is load-bearing (each
+     phase builds on the last). */
+  .layer {
+    display: grid;
+    grid-template-columns: 64px 1fr auto;
+    gap: 1.5rem;
+    align-items: start;
+    padding: 1.8rem 1.2rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    margin-bottom: 0.9rem;
+    text-decoration: none;
+    position: relative;
+    transition: border-color 0.15s ease, transform 0.15s ease;
+    overflow: hidden;
+  }
+  .layer::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 2px;
+    background: var(--line);
+    transition: background 0.15s ease;
+  }
+  .layer:hover {
+    border-color: var(--accent-dim);
+    transform: translateX(3px);
+    text-decoration: none;
+  }
+  .layer:hover::before { background: var(--accent); }
+
+  .layer-index {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    padding-top: 0.2rem;
+  }
+  .layer-index .n { display: block; font-size: 1.6rem; color: var(--text-dim); line-height: 1; margin-bottom: 0.3rem; }
+  .layer:hover .layer-index .n { color: var(--accent); }
+
+  .layer-body h2 {
+    font-family: var(--mono);
+    font-size: 1.05rem;
+    margin: 0 0 0.4rem;
+    padding: 0;
+    border: none;
+    color: var(--text);
+  }
+  .layer-body .layer-sub {
+    font-family: var(--serif);
+    font-size: 0.95rem;
+    color: var(--text-dim);
+    margin: 0 0 0.8rem;
+    max-width: 56ch;
+  }
+  .layer-tags {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .layer-tags span {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--text-faint);
+    border: 1px solid var(--line-soft);
+    padding: 0.15rem 0.5rem;
+    border-radius: 99px;
+  }
+
+  .layer-meta {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--text-faint);
+    text-align: right;
+    white-space: nowrap;
+    padding-top: 0.3rem;
+  }
+
+  @media (max-width: 640px) {
+    .layer { grid-template-columns: 40px 1fr; }
+    .layer-meta { display: none; }
+    .hero-stats { gap: 1.5rem; }
+  }
+
+  .index-table {
+    margin-top: 1rem;
+  }
+  .index-table summary {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 0.8rem 0;
+    border-top: 1px solid var(--line);
+  }
+  .index-table summary:hover { color: var(--accent); }
+  .index-table table { font-size: 0.85rem; }
+  .index-table td a { color: var(--text-dim); }
+  .index-table td a:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a href="index.html" class="topbar-brand"><span class="dot"></span>cloud-engineer-deepdive</a>
+    <nav class="topbar-nav">
+      <a href="index.html" class="active">index</a>
+      <a href="phases/phase1-foundation-gaps.html">01 foundation</a>
+      <a href="phases/phase2-kubernetes-mastery.html">02 kubernetes</a>
+      <a href="phases/phase3-observability-sre.html">03 observability</a>
+      <a href="phases/phase4-architecture-design.html">04 architecture</a>
+      <a href="phases/phase5-interview-prep.html">05 interview</a>
+    </nav>
+  </div>
+</div>
+
+<div class="hero">
+  <div class="hero-kicker">five-phase deep dive reference</div>
+  <h1>Everything below<br><span class="dim">kubectl apply.</span></h1>
+  <p class="lede">
+    A self-contained study system for senior cloud engineering: kernel internals,
+    Kubernetes control-plane mechanics, observability at scale, architecture
+    tradeoffs, and the interview prep to put it all under pressure. No tutorials —
+    primary-source depth, written the way you'd want it explained at 2am before
+    an on-call shift.
+  </p>
+  <div class="hero-stats">
+    <div class="hero-stat"><span class="num">5</span><span class="label">phases</span></div>
+    <div class="hero-stat"><span class="num">~22k</span><span class="label">words</span></div>
+    <div class="hero-stat"><span class="num">18–24</span><span class="label">study days</span></div>
+    <div class="hero-stat"><span class="num">60+</span><span class="label">hands-on exercises</span></div>
+  </div>
+</div>
+
+<div class="stack">
+  <div class="stack-intro">the stack — read top to bottom</div>
+
+  <a class="layer" href="phases/phase1-foundation-gaps.html">
+    <div class="layer-index"><span class="n">01</span>foundation</div>
+    <div class="layer-body">
+      <h2>Foundation Gaps</h2>
+      <p class="layer-sub">Linux kernel internals, namespaces &amp; cgroups, TCP/eBPF networking, Raft consensus, LSM trees, Ceph architecture.</p>
+      <div class="layer-tags"><span>kernel</span><span>networking</span><span>distributed systems</span><span>storage</span></div>
+    </div>
+    <div class="layer-meta">3–4 days</div>
+  </a>
+
+  <a class="layer" href="phases/phase2-kubernetes-mastery.html">
+    <div class="layer-index"><span class="n">02</span>kubernetes</div>
+    <div class="layer-body">
+      <h2>Kubernetes Mastery</h2>
+      <p class="layer-sub">Scheduler internals, operators &amp; CRDs, networking depth, RBAC &amp; security, autoscaling, etcd internals.</p>
+      <div class="layer-tags"><span>scheduler</span><span>controllers</span><span>etcd</span><span>security</span></div>
+    </div>
+    <div class="layer-meta">4–5 days</div>
+  </a>
+
+  <a class="layer" href="phases/phase3-observability-sre.html">
+    <div class="layer-index"><span class="n">03</span>observability</div>
+    <div class="layer-body">
+      <h2>Observability &amp; SRE</h2>
+      <p class="layer-sub">Prometheus TSDB internals, OpenTelemetry &amp; distributed tracing, SLO engineering, incident management.</p>
+      <div class="layer-tags"><span>prometheus</span><span>tracing</span><span>SLOs</span><span>incidents</span></div>
+    </div>
+    <div class="layer-meta">3–4 days</div>
+  </a>
+
+  <a class="layer" href="phases/phase4-architecture-design.html">
+    <div class="layer-index"><span class="n">04</span>architecture</div>
+    <div class="layer-body">
+      <h2>Architecture &amp; Design</h2>
+      <p class="layer-sub">Multi-region high availability, platform engineering, FinOps &amp; cost optimisation, zero-trust security.</p>
+      <div class="layer-tags"><span>multi-region</span><span>platform eng</span><span>finops</span><span>zero-trust</span></div>
+    </div>
+    <div class="layer-meta">4–5 days</div>
+  </a>
+
+  <a class="layer" href="phases/phase5-interview-prep.html">
+    <div class="layer-index"><span class="n">05</span>interview</div>
+    <div class="layer-body">
+      <h2>Interview Prep</h2>
+      <p class="layer-sub">System design methodology with three full scenarios, behavioral frameworks, a 13-question knowledge quiz, common senior-level gaps.</p>
+      <div class="layer-tags"><span>system design</span><span>behavioral</span><span>quiz</span></div>
+    </div>
+    <div class="layer-meta">1 week</div>
+  </a>
+
+  <details class="index-table">
+    <summary>jump to a specific topic →</summary>
+    <table>
+      <thead><tr><th>topic</th><th>phase</th></tr></thead>
+      <tbody>
+        <tr><td><a href="phases/phase1-foundation-gaps.html#linux-internals">Linux namespaces &amp; cgroups</a></td><td>01</td></tr>
+        <tr><td><a href="phases/phase1-foundation-gaps.html#networking-deep-dive">eBPF &amp; CNI internals</a></td><td>01</td></tr>
+        <tr><td><a href="phases/phase1-foundation-gaps.html#distributed-systems-theory">Raft consensus, CAP theorem</a></td><td>01</td></tr>
+        <tr><td><a href="phases/phase2-kubernetes-mastery.html#the-kubernetes-scheduler">Scheduler filter/score pipeline</a></td><td>02</td></tr>
+        <tr><td><a href="phases/phase2-kubernetes-mastery.html#operators-and-crds">Writing operators &amp; CRDs</a></td><td>02</td></tr>
+        <tr><td><a href="phases/phase2-kubernetes-mastery.html#etcd-internals">etcd MVCC, compaction, backup</a></td><td>02</td></tr>
+        <tr><td><a href="phases/phase3-observability-sre.html#prometheus-tsdb-internals">Prometheus TSDB &amp; cardinality</a></td><td>03</td></tr>
+        <tr><td><a href="phases/phase3-observability-sre.html#slo-engineering">SLOs &amp; error budget alerting</a></td><td>03</td></tr>
+        <tr><td><a href="phases/phase4-architecture-design.html#multi-region-high-availability">Multi-region HA design</a></td><td>04</td></tr>
+        <tr><td><a href="phases/phase4-architecture-design.html#zero-trust-security">Zero-trust &amp; Vault secrets</a></td><td>04</td></tr>
+        <tr><td><a href="phases/phase5-interview-prep.html#system-design-methodology-and-scenarios">System design framework</a></td><td>05</td></tr>
+        <tr><td><a href="phases/phase5-interview-prep.html#kubernetes-knowledge-quiz">Kubernetes knowledge quiz</a></td><td>05</td></tr>
+      </tbody>
+    </table>
+  </details>
+</div>
+
+<footer class="site-footer">
+  senior cloud engineer study system — generated reference material, not affiliated with any employer
+</footer>
+
+</body>
+</html>

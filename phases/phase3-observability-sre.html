@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 3 — Observability & SRE — Senior Cloud Engineer Study System</title>
+<meta name="description" content="Prometheus TSDB, OpenTelemetry, SLO engineering, incident management">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a href="../index.html" class="topbar-brand"><span class="dot"></span>cloud-engineer-deepdive</a>
+    <nav class="topbar-nav">
+      <a href="../index.html">index</a>
+      <a href="../phases/phase1-foundation-gaps.html">01 foundation</a>
+      <a href="../phases/phase2-kubernetes-mastery.html">02 kubernetes</a>
+      <a href="../phases/phase3-observability-sre.html" class="active">03 observability</a>
+      <a href="../phases/phase4-architecture-design.html">04 architecture</a>
+      <a href="../phases/phase5-interview-prep.html">05 interview</a>
+    </nav>
+  </div>
+</div>
+
+<div class="page-wrap">
+  <div class="doc-eyebrow">03 / 05 — observability</div>
+<h1 id="phase-3-observability-sre">Phase 3 — Observability &amp;
+SRE</h1>
+<h2
+id="prometheus-tsdb-opentelemetry-slo-engineering-incident-management">Prometheus
+TSDB, OpenTelemetry, SLO Engineering, Incident Management</h2>
+<blockquote>
+<p>The difference between monitoring and observability: monitoring tells
+you when something is broken; observability lets you understand why —
+even for problems you didn’t predict.</p>
+</blockquote>
+<hr />
+<h2 id="learning-objectives">Learning objectives</h2>
+<ul>
+<li>Diagnose and fix a Prometheus cardinality explosion in production
+without data loss</li>
+<li>Design and implement a full distributed tracing pipeline from
+instrumentation to backend</li>
+<li>Define SLOs with proper error budgets and multi-window burn rate
+alerts</li>
+<li>Run blameless post-mortems that produce systemic improvements, not
+blame</li>
+</ul>
+<p><strong>Estimated study time:</strong> 3–4 days</p>
+<hr />
+<h2 id="the-three-pillars-and-why-theyre-incomplete">1. The three
+pillars and why they’re incomplete</h2>
+<p>The “three pillars” framing (metrics, logs, traces) is useful but
+misleading — it suggests they’re alternatives. They’re complements that
+answer different questions:</p>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 18%" />
+<col style="width: 38%" />
+<col style="width: 29%" />
+<col style="width: 13%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Signal</th>
+<th>Question answered</th>
+<th>Cardinality</th>
+<th>Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Metrics</td>
+<td>What is happening? At what rate?</td>
+<td>Low</td>
+<td>Low</td>
+</tr>
+<tr class="even">
+<td>Logs</td>
+<td>What happened for this specific event?</td>
+<td>High</td>
+<td>Medium</td>
+</tr>
+<tr class="odd">
+<td>Traces</td>
+<td>Where in the call graph did this request slow down?</td>
+<td>Medium</td>
+<td>Medium</td>
+</tr>
+<tr class="even">
+<td>Profiles</td>
+<td>Which line of code is consuming this CPU/memory?</td>
+<td>Very high</td>
+<td>High</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The observability gap:</strong> A system can have excellent
+metrics (you know the error rate is 1%) and excellent logs (you have
+every error message) but still be unable to answer “which microservice
+in this request path is slow for requests from users in Germany?”
+without traces.</p>
+<hr />
+<h2 id="prometheus-tsdb-internals">2. Prometheus TSDB internals</h2>
+<h3 id="the-data-model">2.1 The data model</h3>
+<p>Every time series is uniquely identified by a metric name and a set
+of labels:</p>
+<pre><code>http_requests_total{method=&quot;GET&quot;, handler=&quot;/api/v1/orders&quot;, status=&quot;200&quot;, instance=&quot;10.0.0.1:8080&quot;}</code></pre>
+<p>This is one time series. Prometheus stores
+<code>(timestamp int64, value float64)</code> pairs per series. The
+timestamp is milliseconds since epoch. The value is IEEE 754
+double-precision float.</p>
+<p><strong>Cardinality</strong> = the number of unique time series. Each
+unique combination of label values creates a new series.</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Current series count</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ex">prometheus_tsdb_head_series</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Top cardinality contributors</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="ex">topk</span><span class="er">(</span><span class="ex">20,</span> count by<span class="er">(</span><span class="ex">__name__</span><span class="kw">)(</span><span class="ex">{__name__=~</span><span class="st">&quot;.+&quot;</span><span class="ex">}</span><span class="kw">))</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="co"># Inspect label value cardinality for a specific metric</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="ex">count</span><span class="er">(</span><span class="ex">count</span> by<span class="er">(</span><span class="ex">pod</span><span class="kw">)(</span><span class="ex">http_requests_total</span><span class="kw">))</span>   <span class="co"># How many unique pods?</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="ex">count</span><span class="er">(</span><span class="ex">count</span> by<span class="er">(</span><span class="ex">user_id</span><span class="kw">)(</span><span class="ex">api_calls_total</span><span class="kw">))</span>   <span class="co"># Should be 0 if user_id is a label</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a><span class="co"># TSDB head statistics</span></span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-s</span> http://localhost:9090/api/v1/status/tsdb <span class="kw">|</span> <span class="ex">jq</span> <span class="st">&#39;.data.headStats&#39;</span></span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a><span class="co"># numSeries, chunkCount, memoryChunksBytes</span></span></code></pre></div>
+<p><strong>Memory consumption formula (rough):</strong></p>
+<pre><code>memory ≈ active_series × (bytes_per_series)
+bytes_per_series ≈ 3000 bytes (chunks + series metadata + index structures)
+
+1M series × 3000B = ~3GB RAM (just for current data, before WAL overhead)
+10M series ≈ 30GB RAM</code></pre>
+<p>High-cardinality anti-patterns to avoid:</p>
+<pre><code># NEVER use as label values:
+- User IDs, session IDs, request IDs, trace IDs  (unbounded)
+- IP addresses (potentially unbounded)
+- URL paths with variable segments (/users/12345/orders → /users/&lt;id&gt;/orders)
+- Version strings with frequent releases
+- Full error messages (use error codes instead)</code></pre>
+<h3 id="tsdb-block-structure">2.2 TSDB block structure</h3>
+<p><strong>WAL (Write-Ahead Log):</strong></p>
+<p>Every incoming sample is written to the WAL immediately. The WAL is a
+sequence of 128MB segment files, fsync-ed on write. Its purpose: if
+Prometheus crashes, the WAL provides the data to reconstruct the
+in-memory state.</p>
+<pre><code>/prometheus/wal/
+├── 00000001   (128MB segment)
+├── 00000002
+└── checkpoint.00000003/
+    └── 00000000   (checkpoint file — condensed WAL state)</code></pre>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co"># WAL health</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> <span class="at">-lh</span> /prometheus/wal/</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Prometheus exposes WAL corruption detection</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="ex">prometheus_tsdb_wal_corruptions_total</span>  <span class="co"># Should be 0</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a><span class="co"># WAL write latency (critical: if high, Prometheus ingestion will lag)</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a><span class="ex">histogram_quantile</span><span class="er">(</span><span class="ex">0.99,</span> rate<span class="er">(</span><span class="va">prometheus_tsdb_wal_fsync_duration_seconds_bucket</span><span class="op">[</span><span class="dv">5</span>m<span class="op">]</span><span class="kw">))</span></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a><span class="co"># &gt; 100ms is concerning</span></span></code></pre></div>
+<p><strong>Head block (in-memory):</strong></p>
+<p>The head block is the current “hot” data — the last 2 hours
+(configurable via <code>--storage.tsdb.min-block-duration</code>). It
+lives entirely in memory as compressed chunks. Each chunk holds up to
+120 samples per series. The head block is written periodically to disk
+as an immutable block.</p>
+<p><strong>Persistent blocks:</strong></p>
+<pre><code>/prometheus/
+├── 01EYFCW7JVBZ2K2R8N3FJZM6R5/   2-hour block
+│   ├── chunks/
+│   │   └── 000001              compressed chunk data (XOR-encoded floats)
+│   ├── index                   inverted index: label → series IDs → chunk offsets
+│   ├── meta.json              {minTime, maxTime, stats: {numSamples, numSeries, numChunks}}
+│   └── tombstones             deleted series (soft delete, reclaimed at compaction)
+├── 01EYFCX7JVBZ2K2R8N3FJZM6R7/   6-hour block (compacted from 3×2h)
+└── 01EYFCY7JVBZ2K2R8N3FJZM6R9/   24-hour block</code></pre>
+<p><strong>Compaction schedule:</strong></p>
+<pre><code>2h blocks → compact to → 6h block (when 3 × 2h blocks exist)
+6h blocks → compact to → 24h block
+24h blocks → compact to → 48h block (for long retention)</code></pre>
+<div class="sourceCode" id="cb9"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Inspect blocks</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> <span class="at">-la</span> /prometheus/</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> dir <span class="kw">in</span> /prometheus/<span class="pp">*</span>/<span class="kw">;</span> <span class="cf">do</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>  <span class="bu">[</span> <span class="ot">-f</span> <span class="st">&quot;</span><span class="va">$dir</span><span class="st">/meta.json&quot;</span> <span class="bu">]</span> <span class="kw">&amp;&amp;</span> <span class="fu">cat</span> <span class="st">&quot;</span><span class="va">$dir</span><span class="st">/meta.json&quot;</span> <span class="kw">|</span> <span class="ex">jq</span> <span class="st">&#39;{dir: &quot;&#39;</span><span class="va">$dir</span><span class="st">&#39;&quot;, min: .minTime, max: .maxTime, series: .stats.numSeries}&#39;</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a><span class="cf">done</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a><span class="co"># TSDB analyzer (official tool)</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a><span class="ex">./tsdb</span> analyze /prometheus</span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Shows: highest cardinality labels, largest series, chunk stats</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a><span class="co"># Block compaction state</span></span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a><span class="ex">prometheus_tsdb_compactions_total</span></span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a><span class="ex">prometheus_tsdb_compaction_duration_seconds_sum</span></span></code></pre></div>
+<h3 id="chunk-encoding-xor-compression">2.3 Chunk encoding — XOR
+compression</h3>
+<p>Prometheus uses Gorilla-style XOR compression for float64 time series
+values, and delta-of-delta encoding for timestamps. This achieves ~1.37
+bytes per sample (vs 16 bytes raw).</p>
+<p><strong>How XOR works:</strong></p>
+<pre><code>Values: 1000.0, 1001.2, 1002.5, 1001.8, ...
+
+First value: stored as full float64 (8 bytes)
+Subsequent: XOR with previous float64 → only differing bits stored
+  - If value is identical: 1 bit (0)
+  - If value changes slightly: few bits for the changed exponent/mantissa bits
+  - Significant changes: more bits
+
+Why it&#39;s effective: time series values often change slowly.
+CPU metrics going from 23.4% to 23.6% — only the last few bits differ.</code></pre>
+<p><strong>Timestamp delta-of-delta:</strong></p>
+<pre><code>Timestamps: 0, 15000, 30000, 45000, ... (15s scrape interval, ms)
+Deltas: 15000, 15000, 15000, ...
+Delta-of-deltas: 0, 0, 0, ... → stored as a single bit per sample</code></pre>
+<p>Regular scrape intervals compress to almost nothing. Irregular
+intervals (failed scrapes, restarts) cost more bits.</p>
+<h3 id="remote-write-in-depth">2.4 Remote write in depth</h3>
+<pre><code>Prometheus scrapes metrics → head block (in-memory)
+                                    ↓
+                        Remote Write queue (per shard)
+                                    ↓
+                        WAL read (reads WAL segments, not head block)
+                                    ↓
+                        HTTP POST to remote endpoint (protobuf, snappy compressed)
+                                    ↓
+                        Remote storage (Thanos Receive, Cortex, Mimir, VictoriaMetrics)</code></pre>
+<p><strong>Why the WAL, not the head block?</strong> The WAL is
+append-only and durable. Remote write reads from the WAL, tracking its
+position (wal_last_read_position). If the remote endpoint is slow, the
+WAL queue fills. If the WAL is purged before remote write catches up,
+data is lost.</p>
+<div class="sourceCode" id="cb13"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="fu">remote_write</span><span class="kw">:</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="kw">-</span><span class="at"> </span><span class="fu">url</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;http://thanos-receive:19291/api/v1/receive&quot;</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">remote_timeout</span><span class="kw">:</span><span class="at"> 30s</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">queue_config</span><span class="kw">:</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">capacity</span><span class="kw">:</span><span class="at"> </span><span class="dv">50000</span><span class="co">           # Max samples in queue per shard</span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">max_shards</span><span class="kw">:</span><span class="at"> </span><span class="dv">200</span><span class="co">           # Parallel writers (increase for high throughput)</span></span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">min_shards</span><span class="kw">:</span><span class="at"> </span><span class="dv">1</span></span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">max_samples_per_send</span><span class="kw">:</span><span class="at"> </span><span class="dv">10000</span></span>
+<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">batch_send_deadline</span><span class="kw">:</span><span class="at"> 5s</span></span>
+<span id="cb13-10"><a href="#cb13-10" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">min_backoff</span><span class="kw">:</span><span class="at"> 30ms</span></span>
+<span id="cb13-11"><a href="#cb13-11" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">max_backoff</span><span class="kw">:</span><span class="at"> 5s</span></span>
+<span id="cb13-12"><a href="#cb13-12" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">retry_on_http_429</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
+<span id="cb13-13"><a href="#cb13-13" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">write_relabel_configs</span><span class="kw">:</span><span class="co">      # Filter before sending</span></span>
+<span id="cb13-14"><a href="#cb13-14" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">source_labels</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">__name__</span><span class="kw">]</span></span>
+<span id="cb13-15"><a href="#cb13-15" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">regex</span><span class="kw">:</span><span class="at"> </span><span class="st">&#39;(up|scrape_duration_seconds|http_requests_total|node_.*|container_.*)&#39;</span></span>
+<span id="cb13-16"><a href="#cb13-16" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">action</span><span class="kw">:</span><span class="at"> keep</span></span></code></pre></div>
+<div class="sourceCode" id="cb14"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Monitor remote write health</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="ex">prometheus_remote_storage_samples_pending</span>       <span class="co"># Should be low</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a><span class="ex">prometheus_remote_storage_samples_failed_total</span>  <span class="co"># Should be 0</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a><span class="ex">prometheus_remote_storage_queue_highest_sent_timestamp_seconds</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>  <span class="co"># Compare with time() — if gap &gt; 1min, remote write is lagging</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a><span class="co"># Shards auto-scaling metrics</span></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a><span class="ex">prometheus_remote_storage_shards</span>               <span class="co"># Current shard count</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a><span class="ex">prometheus_remote_storage_shards_desired</span>       <span class="co"># What Prometheus wants</span></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a><span class="co"># Remote write latency</span></span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a><span class="ex">histogram_quantile</span><span class="er">(</span><span class="ex">0.99,</span> rate<span class="er">(</span><span class="va">prometheus_remote_storage_sent_batch_duration_seconds_bucket</span><span class="op">[</span><span class="dv">5</span>m<span class="op">]</span><span class="kw">))</span></span></code></pre></div>
+<hr />
+<h2 id="opentelemetry-and-distributed-tracing">3. OpenTelemetry and
+distributed tracing</h2>
+<h3 id="why-tracing-exists-the-problems-it-solves">3.1 Why tracing
+exists — the problems it solves</h3>
+<p><strong>Waterfall diagrams:</strong> A trace shows you a timeline of
+a single request’s journey through your system:</p>
+<pre><code>[──────────────── api-gateway: handle /checkout ─────────────────────]  450ms
+   [── auth-service: validate-token ──]  80ms
+                 [── inventory-service: check-availability ───────]  310ms (slow!)
+                         [── db-query: SELECT FROM inventory ──]  290ms
+                 [── payment-service: charge ──────]  120ms</code></pre>
+<p>Without traces, you’d see from Prometheus that <code>/checkout</code>
+p99 is 450ms. But you wouldn’t know inventory-service is the bottleneck,
+and you wouldn’t know it’s a specific database query.</p>
+<h3 id="the-otel-data-model">3.2 The OTel data model</h3>
+<p><strong>Span:</strong></p>
+<pre><code>Span {
+  trace_id: 4bf92f3577b34da6a3ce929d0e0e4736  (128 bits, shared across entire trace)
+  span_id:  00f067aa0ba902b7                   (64 bits, unique to this span)
+  parent_span_id: &lt;null for root&gt;
+  name: &quot;http.server /checkout&quot;
+  kind: SERVER | CLIENT | PRODUCER | CONSUMER | INTERNAL
+  start_time: 2024-06-15T10:30:00.000Z
+  end_time:   2024-06-15T10:30:00.450Z
+  status: OK | ERROR | UNSET
+  attributes: {
+    &quot;http.method&quot;: &quot;POST&quot;,
+    &quot;http.url&quot;: &quot;https://api.example.com/checkout&quot;,
+    &quot;http.status_code&quot;: 200,
+    &quot;user.id&quot;: &quot;u123&quot;,    # Be careful: this creates cardinality in trace storage
+  }
+  events: [
+    {time: 10:30:00.100, name: &quot;payment.started&quot;, attributes: {&quot;amount&quot;: 49.99}}
+    {time: 10:30:00.220, name: &quot;payment.completed&quot;}
+  ]
+  links: []   # References to spans in other traces (for batch processing etc.)
+}</code></pre>
+<p><strong>Semantic conventions:</strong> OTel defines standard
+attribute names for common operations:</p>
+<pre><code>HTTP:     http.method, http.url, http.status_code, http.route
+Database: db.system, db.statement, db.operation, db.name
+Messaging: messaging.system, messaging.destination, messaging.operation
+RPC:      rpc.system, rpc.method, rpc.service</code></pre>
+<p>Using semantic conventions means your traces are compatible with
+standard dashboards and analysis tools.</p>
+<h3 id="context-propagation-the-mechanism">3.3 Context propagation — the
+mechanism</h3>
+<p>Context propagation is the mechanism that lets spans across service
+boundaries be linked into a trace tree.</p>
+<p><strong>W3C TraceContext (the standard):</strong></p>
+<pre class="http"><code>traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+             ^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^
+             |   trace-id (32 hex chars)            span-id           flags
+             version (always &quot;00&quot;)                  (16 hex chars)    01=sampled</code></pre>
+<p>The injecting service adds this header to outgoing requests. The
+receiving service extracts it and makes the trace_id/span_id the parent
+of its new span.</p>
+<div class="sourceCode" id="cb19"><pre
+class="sourceCode go"><code class="sourceCode go"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Instrumentation pattern in Go</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="kw">import</span> <span class="op">(</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;go.opentelemetry.io/otel&quot;</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;go.opentelemetry.io/otel/propagation&quot;</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;go.opentelemetry.io/otel/trace&quot;</span></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a><span class="op">)</span></span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> tracer <span class="op">=</span> otel<span class="op">.</span>Tracer<span class="op">(</span><span class="st">&quot;inventory-service&quot;</span><span class="op">)</span></span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a><span class="co">// HTTP Handler: extract incoming context</span></span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a><span class="kw">func</span> handleCheckAvailability<span class="op">(</span>w http<span class="op">.</span>ResponseWriter<span class="op">,</span> r <span class="op">*</span>http<span class="op">.</span>Request<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Extract: creates a context with the incoming trace context</span></span>
+<span id="cb19-13"><a href="#cb19-13" aria-hidden="true" tabindex="-1"></a>    ctx <span class="op">:=</span> otel<span class="op">.</span>GetTextMapPropagator<span class="op">().</span>Extract<span class="op">(</span>r<span class="op">.</span>Context<span class="op">(),</span> propagation<span class="op">.</span>HeaderCarrier<span class="op">(</span>r<span class="op">.</span>Header<span class="op">))</span></span>
+<span id="cb19-14"><a href="#cb19-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-15"><a href="#cb19-15" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Start a child span under the extracted context</span></span>
+<span id="cb19-16"><a href="#cb19-16" aria-hidden="true" tabindex="-1"></a>    ctx<span class="op">,</span> span <span class="op">:=</span> tracer<span class="op">.</span>Start<span class="op">(</span>ctx<span class="op">,</span> <span class="st">&quot;check-availability&quot;</span><span class="op">,</span></span>
+<span id="cb19-17"><a href="#cb19-17" aria-hidden="true" tabindex="-1"></a>        trace<span class="op">.</span>WithAttributes<span class="op">(</span></span>
+<span id="cb19-18"><a href="#cb19-18" aria-hidden="true" tabindex="-1"></a>            attribute<span class="op">.</span>String<span class="op">(</span><span class="st">&quot;item.id&quot;</span><span class="op">,</span> r<span class="op">.</span>URL<span class="op">.</span>Query<span class="op">().</span>Get<span class="op">(</span><span class="st">&quot;id&quot;</span><span class="op">)),</span></span>
+<span id="cb19-19"><a href="#cb19-19" aria-hidden="true" tabindex="-1"></a>        <span class="op">),</span></span>
+<span id="cb19-20"><a href="#cb19-20" aria-hidden="true" tabindex="-1"></a>    <span class="op">)</span></span>
+<span id="cb19-21"><a href="#cb19-21" aria-hidden="true" tabindex="-1"></a>    <span class="cf">defer</span> span<span class="op">.</span>End<span class="op">()</span></span>
+<span id="cb19-22"><a href="#cb19-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-23"><a href="#cb19-23" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Call downstream: inject context into outgoing request</span></span>
+<span id="cb19-24"><a href="#cb19-24" aria-hidden="true" tabindex="-1"></a>    req<span class="op">,</span> _ <span class="op">:=</span> http<span class="op">.</span>NewRequestWithContext<span class="op">(</span>ctx<span class="op">,</span> <span class="st">&quot;GET&quot;</span><span class="op">,</span> <span class="st">&quot;http://db:5432/...&quot;</span><span class="op">,</span> <span class="ot">nil</span><span class="op">)</span></span>
+<span id="cb19-25"><a href="#cb19-25" aria-hidden="true" tabindex="-1"></a>    otel<span class="op">.</span>GetTextMapPropagator<span class="op">().</span>Inject<span class="op">(</span>ctx<span class="op">,</span> propagation<span class="op">.</span>HeaderCarrier<span class="op">(</span>req<span class="op">.</span>Header<span class="op">))</span></span>
+<span id="cb19-26"><a href="#cb19-26" aria-hidden="true" tabindex="-1"></a>    <span class="co">// req now carries traceparent header linking this span to the tree</span></span>
+<span id="cb19-27"><a href="#cb19-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-28"><a href="#cb19-28" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Record an error</span></span>
+<span id="cb19-29"><a href="#cb19-29" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> err <span class="op">:=</span> dbCall<span class="op">(</span>ctx<span class="op">);</span> err <span class="op">!=</span> <span class="ot">nil</span> <span class="op">{</span></span>
+<span id="cb19-30"><a href="#cb19-30" aria-hidden="true" tabindex="-1"></a>        span<span class="op">.</span>RecordError<span class="op">(</span>err<span class="op">)</span></span>
+<span id="cb19-31"><a href="#cb19-31" aria-hidden="true" tabindex="-1"></a>        span<span class="op">.</span>SetStatus<span class="op">(</span>codes<span class="op">.</span>Error<span class="op">,</span> err<span class="op">.</span>Error<span class="op">())</span></span>
+<span id="cb19-32"><a href="#cb19-32" aria-hidden="true" tabindex="-1"></a>        http<span class="op">.</span>Error<span class="op">(</span>w<span class="op">,</span> <span class="st">&quot;internal error&quot;</span><span class="op">,</span> <span class="dv">500</span><span class="op">)</span></span>
+<span id="cb19-33"><a href="#cb19-33" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span></span>
+<span id="cb19-34"><a href="#cb19-34" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb19-35"><a href="#cb19-35" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb20"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Python equivalent</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> opentelemetry <span class="im">import</span> trace, propagate</span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> opentelemetry.trace.propagation.tracecontext <span class="im">import</span> TraceContextTextMapPropagator</span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a>tracer <span class="op">=</span> trace.get_tracer(<span class="st">&quot;payment-service&quot;</span>)</span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> handle_payment(request):</span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Extract context from incoming request headers</span></span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a>    ctx <span class="op">=</span> propagate.extract(<span class="bu">dict</span>(request.headers))</span>
+<span id="cb20-10"><a href="#cb20-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-11"><a href="#cb20-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> tracer.start_as_current_span(<span class="st">&quot;process-payment&quot;</span>, context<span class="op">=</span>ctx) <span class="im">as</span> span:</span>
+<span id="cb20-12"><a href="#cb20-12" aria-hidden="true" tabindex="-1"></a>        span.set_attribute(<span class="st">&quot;payment.amount&quot;</span>, request.json[<span class="st">&quot;amount&quot;</span>])</span>
+<span id="cb20-13"><a href="#cb20-13" aria-hidden="true" tabindex="-1"></a>        span.set_attribute(<span class="st">&quot;payment.currency&quot;</span>, request.json[<span class="st">&quot;currency&quot;</span>])</span>
+<span id="cb20-14"><a href="#cb20-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-15"><a href="#cb20-15" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
+<span id="cb20-16"><a href="#cb20-16" aria-hidden="true" tabindex="-1"></a>            result <span class="op">=</span> charge_card(request.json)</span>
+<span id="cb20-17"><a href="#cb20-17" aria-hidden="true" tabindex="-1"></a>            span.add_event(<span class="st">&quot;payment.charged&quot;</span>, {<span class="st">&quot;transaction_id&quot;</span>: result.<span class="bu">id</span>})</span>
+<span id="cb20-18"><a href="#cb20-18" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> result</span>
+<span id="cb20-19"><a href="#cb20-19" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> PaymentDeclined <span class="im">as</span> e:</span>
+<span id="cb20-20"><a href="#cb20-20" aria-hidden="true" tabindex="-1"></a>            span.set_status(StatusCode.ERROR, <span class="bu">str</span>(e))</span>
+<span id="cb20-21"><a href="#cb20-21" aria-hidden="true" tabindex="-1"></a>            span.record_exception(e)</span>
+<span id="cb20-22"><a href="#cb20-22" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span></code></pre></div>
+<h3 id="sampling-strategies-in-depth">3.4 Sampling strategies — in
+depth</h3>
+<p>At 10,000 RPS, storing every trace is: 10,000 traces/s × 86,400 s/day
+= 864M traces/day. At 1KB/trace = 864GB/day. Sampling is mandatory.</p>
+<p><strong>Head-based sampling — decided at the root span:</strong></p>
+<pre><code>Pros: Simple, deterministic (same trace_id always gets same decision),
+      no buffering required
+Cons: Decision made before you know if the trace is interesting
+      (can&#39;t guarantee 100% of errors are captured)
+
+Implementations:
+  - Always: capture everything (dev/staging only)
+  - Never: capture nothing (useful for high-traffic services)
+  - Ratio: capture X% of traces (e.g., 1%)
+  - ParentBased: respect the sampling decision from the parent span</code></pre>
+<p><strong>Tail-based sampling — decided after the trace is
+complete:</strong></p>
+<pre><code>Pros: Can always capture 100% of errors and slow traces
+Cons: Requires buffering entire traces (memory intensive),
+      must wait for all spans to arrive (typically 10-30s delay)
+
+Requires: OTel Collector with tail_sampling processor,
+          or Tempo/Jaeger with dedicated sampling service</code></pre>
+<div class="sourceCode" id="cb23"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="co"># OTel Collector tail_sampling config</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a><span class="fu">processors</span><span class="kw">:</span></span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">tail_sampling</span><span class="kw">:</span></span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">decision_wait</span><span class="kw">:</span><span class="at"> 30s</span><span class="co">        # Wait for all spans before deciding</span></span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">num_traces</span><span class="kw">:</span><span class="at"> </span><span class="dv">100000</span><span class="co">        # Hold this many traces in memory</span></span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">policies</span><span class="kw">:</span></span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> always-sample-errors</span></span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">type</span><span class="kw">:</span><span class="at"> status_code</span></span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">status_code</span><span class="kw">:</span></span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">status_codes</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">ERROR</span><span class="kw">]</span></span>
+<span id="cb23-11"><a href="#cb23-11" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> always-sample-slow</span></span>
+<span id="cb23-12"><a href="#cb23-12" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">type</span><span class="kw">:</span><span class="at"> latency</span></span>
+<span id="cb23-13"><a href="#cb23-13" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">latency</span><span class="kw">:</span></span>
+<span id="cb23-14"><a href="#cb23-14" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">threshold_ms</span><span class="kw">:</span><span class="at"> </span><span class="dv">1000</span><span class="co">    # Always keep traces &gt; 1 second</span></span>
+<span id="cb23-15"><a href="#cb23-15" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> sample-http-500</span></span>
+<span id="cb23-16"><a href="#cb23-16" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">type</span><span class="kw">:</span><span class="at"> string_attribute</span></span>
+<span id="cb23-17"><a href="#cb23-17" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">string_attribute</span><span class="kw">:</span></span>
+<span id="cb23-18"><a href="#cb23-18" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">key</span><span class="kw">:</span><span class="at"> http.status_code</span></span>
+<span id="cb23-19"><a href="#cb23-19" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">values</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">&quot;500&quot;</span><span class="kw">,</span><span class="at"> </span><span class="st">&quot;502&quot;</span><span class="kw">,</span><span class="at"> </span><span class="st">&quot;503&quot;</span><span class="kw">,</span><span class="at"> </span><span class="st">&quot;504&quot;</span><span class="kw">]</span></span>
+<span id="cb23-20"><a href="#cb23-20" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> probabilistic-baseline</span></span>
+<span id="cb23-21"><a href="#cb23-21" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">type</span><span class="kw">:</span><span class="at"> probabilistic</span></span>
+<span id="cb23-22"><a href="#cb23-22" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">probabilistic</span><span class="kw">:</span></span>
+<span id="cb23-23"><a href="#cb23-23" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">sampling_percentage</span><span class="kw">:</span><span class="at"> </span><span class="dv">1</span><span class="co">  # Keep 1% of everything else</span></span></code></pre></div>
+<h3 id="otel-collector-the-hub">3.5 OTel Collector — the hub</h3>
+<p>The Collector decouples instrumentation from backends. Your services
+send to the Collector; the Collector fans out to whatever backends you
+use.</p>
+<div class="sourceCode" id="cb24"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Complete collector config</span></span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a><span class="fu">receivers</span><span class="kw">:</span></span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">otlp</span><span class="kw">:</span></span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">protocols</span><span class="kw">:</span></span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">grpc</span><span class="kw">:</span><span class="at"> </span><span class="kw">{</span><span class="fu">endpoint</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;0.0.0.0:4317&quot;</span><span class="kw">}</span></span>
+<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">http</span><span class="kw">:</span><span class="at"> </span><span class="kw">{</span><span class="fu">endpoint</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;0.0.0.0:4318&quot;</span><span class="kw">}</span></span>
+<span id="cb24-7"><a href="#cb24-7" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">prometheus</span><span class="kw">:</span><span class="co">                          # Scrape existing Prometheus endpoints</span></span>
+<span id="cb24-8"><a href="#cb24-8" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">config</span><span class="kw">:</span></span>
+<span id="cb24-9"><a href="#cb24-9" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">scrape_configs</span><span class="kw">:</span></span>
+<span id="cb24-10"><a href="#cb24-10" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">job_name</span><span class="kw">:</span><span class="at"> </span><span class="st">&#39;existing-service&#39;</span></span>
+<span id="cb24-11"><a href="#cb24-11" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">static_configs</span><span class="kw">:</span></span>
+<span id="cb24-12"><a href="#cb24-12" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="kw">-</span><span class="at"> </span><span class="fu">targets</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">&#39;service:8080&#39;</span><span class="kw">]</span></span>
+<span id="cb24-13"><a href="#cb24-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-14"><a href="#cb24-14" aria-hidden="true" tabindex="-1"></a><span class="fu">processors</span><span class="kw">:</span></span>
+<span id="cb24-15"><a href="#cb24-15" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">batch</span><span class="kw">:</span></span>
+<span id="cb24-16"><a href="#cb24-16" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">send_batch_size</span><span class="kw">:</span><span class="at"> </span><span class="dv">1024</span></span>
+<span id="cb24-17"><a href="#cb24-17" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">timeout</span><span class="kw">:</span><span class="at"> 5s</span></span>
+<span id="cb24-18"><a href="#cb24-18" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">memory_limiter</span><span class="kw">:</span></span>
+<span id="cb24-19"><a href="#cb24-19" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">check_interval</span><span class="kw">:</span><span class="at"> 1s</span></span>
+<span id="cb24-20"><a href="#cb24-20" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">limit_mib</span><span class="kw">:</span><span class="at"> </span><span class="dv">1024</span></span>
+<span id="cb24-21"><a href="#cb24-21" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">spike_limit_mib</span><span class="kw">:</span><span class="at"> </span><span class="dv">256</span></span>
+<span id="cb24-22"><a href="#cb24-22" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">resource</span><span class="kw">:</span><span class="co">                            # Add cluster-level attributes</span></span>
+<span id="cb24-23"><a href="#cb24-23" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">attributes</span><span class="kw">:</span></span>
+<span id="cb24-24"><a href="#cb24-24" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> </span><span class="fu">key</span><span class="kw">:</span><span class="at"> deployment.environment</span></span>
+<span id="cb24-25"><a href="#cb24-25" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">value</span><span class="kw">:</span><span class="at"> production</span></span>
+<span id="cb24-26"><a href="#cb24-26" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">action</span><span class="kw">:</span><span class="at"> upsert</span></span>
+<span id="cb24-27"><a href="#cb24-27" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> </span><span class="fu">key</span><span class="kw">:</span><span class="at"> cloud.region</span></span>
+<span id="cb24-28"><a href="#cb24-28" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">from_attribute</span><span class="kw">:</span><span class="at"> REGION</span></span>
+<span id="cb24-29"><a href="#cb24-29" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">action</span><span class="kw">:</span><span class="at"> insert</span></span>
+<span id="cb24-30"><a href="#cb24-30" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">attributes</span><span class="kw">:</span><span class="co">                          # Remove sensitive data</span></span>
+<span id="cb24-31"><a href="#cb24-31" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">actions</span><span class="kw">:</span></span>
+<span id="cb24-32"><a href="#cb24-32" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> </span><span class="fu">key</span><span class="kw">:</span><span class="at"> user.password</span></span>
+<span id="cb24-33"><a href="#cb24-33" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">action</span><span class="kw">:</span><span class="at"> delete</span></span>
+<span id="cb24-34"><a href="#cb24-34" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> </span><span class="fu">key</span><span class="kw">:</span><span class="at"> http.request.header.authorization</span></span>
+<span id="cb24-35"><a href="#cb24-35" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">action</span><span class="kw">:</span><span class="at"> delete</span></span>
+<span id="cb24-36"><a href="#cb24-36" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-37"><a href="#cb24-37" aria-hidden="true" tabindex="-1"></a><span class="fu">exporters</span><span class="kw">:</span></span>
+<span id="cb24-38"><a href="#cb24-38" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">otlp/tempo</span><span class="kw">:</span></span>
+<span id="cb24-39"><a href="#cb24-39" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">endpoint</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;tempo.monitoring:4317&quot;</span></span>
+<span id="cb24-40"><a href="#cb24-40" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">tls</span><span class="kw">:</span><span class="at"> </span><span class="kw">{</span><span class="fu">insecure</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span><span class="kw">}</span></span>
+<span id="cb24-41"><a href="#cb24-41" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">prometheusremotewrite</span><span class="kw">:</span></span>
+<span id="cb24-42"><a href="#cb24-42" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">endpoint</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;http://prometheus:9090/api/v1/write&quot;</span></span>
+<span id="cb24-43"><a href="#cb24-43" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">logging</span><span class="kw">:</span></span>
+<span id="cb24-44"><a href="#cb24-44" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">loglevel</span><span class="kw">:</span><span class="at"> warn</span></span>
+<span id="cb24-45"><a href="#cb24-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-46"><a href="#cb24-46" aria-hidden="true" tabindex="-1"></a><span class="fu">service</span><span class="kw">:</span></span>
+<span id="cb24-47"><a href="#cb24-47" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">pipelines</span><span class="kw">:</span></span>
+<span id="cb24-48"><a href="#cb24-48" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">traces</span><span class="kw">:</span></span>
+<span id="cb24-49"><a href="#cb24-49" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">receivers</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">otlp</span><span class="kw">]</span></span>
+<span id="cb24-50"><a href="#cb24-50" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">processors</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">memory_limiter</span><span class="kw">,</span><span class="at"> batch</span><span class="kw">,</span><span class="at"> resource</span><span class="kw">,</span><span class="at"> attributes</span><span class="kw">]</span></span>
+<span id="cb24-51"><a href="#cb24-51" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">exporters</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">otlp/tempo</span><span class="kw">]</span></span>
+<span id="cb24-52"><a href="#cb24-52" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">metrics</span><span class="kw">:</span></span>
+<span id="cb24-53"><a href="#cb24-53" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">receivers</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">otlp</span><span class="kw">,</span><span class="at"> prometheus</span><span class="kw">]</span></span>
+<span id="cb24-54"><a href="#cb24-54" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">processors</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">batch</span><span class="kw">]</span></span>
+<span id="cb24-55"><a href="#cb24-55" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">exporters</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">prometheusremotewrite</span><span class="kw">]</span></span></code></pre></div>
+<hr />
+<h2 id="slo-engineering">4. SLO engineering</h2>
+<h3 id="sli-slo-sla-precise-definitions">4.1 SLI → SLO → SLA — precise
+definitions</h3>
+<p><strong>SLI (Service Level Indicator):</strong> A quantitative
+measurement of a service behaviour that matters to users.</p>
+<p>Good SLI criteria: - Measurable from data you already have (or can
+cheaply instrument) - Correlated with actual user experience -
+Aggregatable (percentiles, rates, ratios — not raw values)</p>
+<pre><code>Strong SLIs:
+- (successful_requests / total_requests) — availability
+- percentile(request_duration, 0.99) — latency
+- (valid_data_points / total_data_points) — data correctness
+- (requests_within_latency_threshold / total_requests) — latency ratio SLI
+
+Weak SLIs:
+- CPU utilisation (not correlated with user experience)
+- &quot;System is healthy&quot; (not measurable)
+- Mean latency (hides tail; p99 or p999 is better)</code></pre>
+<p><strong>SLO (Service Level Objective):</strong> A target value for an
+SLI, over a time window.</p>
+<pre><code>Format: [SLI] should be [operator] [value] over [window]
+
+Examples:
+- 99.9% of HTTP requests return 2xx or 3xx, measured over a rolling 30-day window
+- 95% of API requests complete in &lt; 200ms, measured over 28 days
+- 99.99% of messages are delivered at least once within 60 seconds</code></pre>
+<p><strong>SLA (Service Level Agreement):</strong> A contractual
+commitment, usually with financial consequences for breach. The SLA
+should be lower than your SLO — the gap is your safety margin.</p>
+<h3 id="error-budget-the-key-insight">4.2 Error budget — the key
+insight</h3>
+<p>The error budget converts an abstract SLO into a concrete quantity
+you can spend.</p>
+<pre><code>SLO: 99.9% availability over 30 days
+Error budget fraction: 1 - 0.999 = 0.001
+
+For a service receiving 1M requests/day (30M/month):
+  Error budget in requests: 30M × 0.001 = 30,000 failed requests
+  Error budget in time: 30 days × 24h × 60m × 0.001 = 43.2 minutes
+
+If you currently have 10,000 failures: 33% of budget consumed
+If you have 30,001 failures: SLO breached</code></pre>
+<p><strong>Error budget as a policy tool:</strong></p>
+<pre><code>Error budget remaining &gt; 50%:
+  → Deploy freely, run experiments, accept more risk
+  → Invest in feature velocity
+
+Error budget &lt; 20%:
+  → Slow down deployments, increase testing requirements
+  → Focus on reliability improvements
+
+Error budget exhausted:
+  → Feature freeze
+  → All engineering effort on reliability
+  → No new deployments until budget recovers</code></pre>
+<h3 id="multi-window-multi-burn-rate-alerting">4.3 Multi-window,
+multi-burn-rate alerting</h3>
+<p>This is the Google SRE Workbook method. Simple threshold alerts are
+inadequate:</p>
+<ul>
+<li>Alert on 1% error rate: fires for a 1-second spike consuming 0.0001%
+of budget</li>
+<li>Alert on 1% error rate for 5 minutes: misses a 0.5% error rate that
+drains budget slowly</li>
+</ul>
+<p><strong>Burn rate</strong> = (current error rate) / (error budget
+fraction)</p>
+<ul>
+<li>Burn rate 1 = consuming budget at exactly the replenishment
+rate</li>
+<li>Burn rate 14.4 = budget exhausted in 30 days / 14.4 = ~50 hours</li>
+<li>Burn rate 36 = budget exhausted in 30 days / 36 = ~20 hours</li>
+</ul>
+<p><strong>Alert matrix (for 99.9% SLO = 0.1% error
+budget):</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Severity</th>
+<th>Burn rate</th>
+<th>Alert window</th>
+<th>Budget consumed</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Page</td>
+<td>14.4×</td>
+<td>1h</td>
+<td>2% in 1h</td>
+<td>Immediate response</td>
+</tr>
+<tr class="even">
+<td>Page</td>
+<td>6×</td>
+<td>6h</td>
+<td>5% in 6h</td>
+<td>Urgent response</td>
+</tr>
+<tr class="odd">
+<td>Ticket</td>
+<td>3×</td>
+<td>1d</td>
+<td>10% in 1d</td>
+<td>Fix within 1 day</td>
+</tr>
+<tr class="even">
+<td>Ticket</td>
+<td>1×</td>
+<td>3d</td>
+<td>10% in 3d</td>
+<td>Fix within 3 days</td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb29"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Prometheus alerting rules — 99.9% SLO (error_budget = 0.001)</span></span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a><span class="fu">groups</span><span class="kw">:</span></span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> slo_alerts</span></span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">rules</span><span class="kw">:</span></span>
+<span id="cb29-5"><a href="#cb29-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-6"><a href="#cb29-6" aria-hidden="true" tabindex="-1"></a><span class="co">  # Recording rules (compute SLI over windows)</span></span>
+<span id="cb29-7"><a href="#cb29-7" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">record</span><span class="kw">:</span><span class="at"> job:http_error_ratio:rate1h</span></span>
+<span id="cb29-8"><a href="#cb29-8" aria-hidden="true" tabindex="-1"></a><span class="fu">    expr</span><span class="kw">: </span><span class="ch">|</span></span>
+<span id="cb29-9"><a href="#cb29-9" aria-hidden="true" tabindex="-1"></a>      sum(rate(http_requests_total{status=~&quot;5..&quot;}[1h]))</span>
+<span id="cb29-10"><a href="#cb29-10" aria-hidden="true" tabindex="-1"></a>      / sum(rate(http_requests_total[1h]))</span>
+<span id="cb29-11"><a href="#cb29-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-12"><a href="#cb29-12" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">record</span><span class="kw">:</span><span class="at"> job:http_error_ratio:rate6h</span></span>
+<span id="cb29-13"><a href="#cb29-13" aria-hidden="true" tabindex="-1"></a><span class="fu">    expr</span><span class="kw">: </span><span class="ch">|</span></span>
+<span id="cb29-14"><a href="#cb29-14" aria-hidden="true" tabindex="-1"></a>      sum(rate(http_requests_total{status=~&quot;5..&quot;}[6h]))</span>
+<span id="cb29-15"><a href="#cb29-15" aria-hidden="true" tabindex="-1"></a>      / sum(rate(http_requests_total[6h]))</span>
+<span id="cb29-16"><a href="#cb29-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-17"><a href="#cb29-17" aria-hidden="true" tabindex="-1"></a><span class="co">  # Page alert: fast burn (14.4× in 1h window, confirmed by 5m window)</span></span>
+<span id="cb29-18"><a href="#cb29-18" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">alert</span><span class="kw">:</span><span class="at"> SLOBurnRateFast</span></span>
+<span id="cb29-19"><a href="#cb29-19" aria-hidden="true" tabindex="-1"></a><span class="fu">    expr</span><span class="kw">: </span><span class="ch">|</span></span>
+<span id="cb29-20"><a href="#cb29-20" aria-hidden="true" tabindex="-1"></a>      job:http_error_ratio:rate1h &gt; (14.4 * 0.001)</span>
+<span id="cb29-21"><a href="#cb29-21" aria-hidden="true" tabindex="-1"></a>      and</span>
+<span id="cb29-22"><a href="#cb29-22" aria-hidden="true" tabindex="-1"></a>      job:http_error_ratio:rate5m &gt; (14.4 * 0.001)</span>
+<span id="cb29-23"><a href="#cb29-23" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">for</span><span class="kw">:</span><span class="at"> 2m</span></span>
+<span id="cb29-24"><a href="#cb29-24" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">labels</span><span class="kw">:</span></span>
+<span id="cb29-25"><a href="#cb29-25" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">severity</span><span class="kw">:</span><span class="at"> page</span></span>
+<span id="cb29-26"><a href="#cb29-26" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">annotations</span><span class="kw">:</span></span>
+<span id="cb29-27"><a href="#cb29-27" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">summary</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;High SLO burn rate — page immediately&quot;</span></span>
+<span id="cb29-28"><a href="#cb29-28" aria-hidden="true" tabindex="-1"></a><span class="fu">      description</span><span class="kw">: </span><span class="ch">|</span></span>
+<span id="cb29-29"><a href="#cb29-29" aria-hidden="true" tabindex="-1"></a>        Error rate {{ $value | humanizePercentage }} is burning error budget at 14.4×.</span>
+<span id="cb29-30"><a href="#cb29-30" aria-hidden="true" tabindex="-1"></a>        At this rate, 30-day budget exhausted in ~50 hours.</span>
+<span id="cb29-31"><a href="#cb29-31" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-32"><a href="#cb29-32" aria-hidden="true" tabindex="-1"></a><span class="co">  # Ticket alert: slow burn (6× in 6h window)</span></span>
+<span id="cb29-33"><a href="#cb29-33" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">alert</span><span class="kw">:</span><span class="at"> SLOBurnRateSlow</span></span>
+<span id="cb29-34"><a href="#cb29-34" aria-hidden="true" tabindex="-1"></a><span class="fu">    expr</span><span class="kw">: </span><span class="ch">|</span></span>
+<span id="cb29-35"><a href="#cb29-35" aria-hidden="true" tabindex="-1"></a>      job:http_error_ratio:rate6h &gt; (6 * 0.001)</span>
+<span id="cb29-36"><a href="#cb29-36" aria-hidden="true" tabindex="-1"></a>      and</span>
+<span id="cb29-37"><a href="#cb29-37" aria-hidden="true" tabindex="-1"></a>      job:http_error_ratio:rate30m &gt; (6 * 0.001)</span>
+<span id="cb29-38"><a href="#cb29-38" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">for</span><span class="kw">:</span><span class="at"> 15m</span></span>
+<span id="cb29-39"><a href="#cb29-39" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">labels</span><span class="kw">:</span></span>
+<span id="cb29-40"><a href="#cb29-40" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">severity</span><span class="kw">:</span><span class="at"> ticket</span></span>
+<span id="cb29-41"><a href="#cb29-41" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">annotations</span><span class="kw">:</span></span>
+<span id="cb29-42"><a href="#cb29-42" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">summary</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;Elevated SLO burn rate — create ticket&quot;</span></span></code></pre></div>
+<p><strong>PromQL for error budget dashboard:</strong></p>
+<pre class="promql"><code># Remaining error budget (as fraction)
+1 - (
+  sum(increase(http_requests_total{status=~&quot;5..&quot;}[30d]))
+  /
+  sum(increase(http_requests_total[30d]))
+) / 0.001
+
+# Error budget burn rate (current)
+(
+  sum(rate(http_requests_total{status=~&quot;5..&quot;}[1h]))
+  / sum(rate(http_requests_total[1h]))
+) / 0.001
+
+# Time until budget exhausted at current burn rate
+(
+  1 - (
+    sum(increase(http_requests_total{status=~&quot;5..&quot;}[30d]))
+    / sum(increase(http_requests_total[30d]))
+  ) / 0.001
+) / (
+  (
+    sum(rate(http_requests_total{status=~&quot;5..&quot;}[1h]))
+    / sum(rate(http_requests_total[1h]))
+  ) / 0.001
+) * 720  # hours in 30 days</code></pre>
+<hr />
+<h2 id="incident-management">5. Incident management</h2>
+<h3 id="incident-lifecycle-systematic-response">5.1 Incident lifecycle —
+systematic response</h3>
+<pre><code>Detection
+  - Alerting fires (Alertmanager → PagerDuty → phone)
+  - User reports (support ticket, social media, status page subscriber)
+  - Proactive monitoring (synthetic checks, canaries)
+    ↓
+Triage (&lt; 5 minutes)
+  - Acknowledge alert
+  - Assess severity (how many users? which regions? what&#39;s broken?)
+  - Declare incident severity level
+  - Page additional responders if needed
+    ↓
+Communication
+  - Open incident channel (#incident-YYYY-MM-DD-service)
+  - Assign incident commander (IC) — owns process, not investigation
+  - Assign communication lead (external status updates)
+  - Post to status page if customer-visible
+    ↓
+Mitigation (stop the bleeding)
+  - Rollback deployment if recent change
+  - Reroute traffic away from affected component
+  - Scale up healthy instances
+  - Enable feature flag to disable affected feature
+  - Do NOT deep-dive root cause yet — mitigate first
+    ↓
+Resolution
+  - Confirm metrics have normalised
+  - Update status page
+  - Debrief in incident channel
+    ↓
+Post-mortem
+  - Within 5 business days
+  - Blameless analysis
+  - Action items with owners and due dates</code></pre>
+<h3 id="blameless-post-mortems">5.2 Blameless post-mortems</h3>
+<p><strong>The key principle:</strong> Systems fail, not people.
+Individual mistakes are symptoms of systemic conditions. A person made a
+“mistake” because the system allowed them to, didn’t prevent them from
+doing so, or provided misleading information.</p>
+<p><strong>Five Whys — used correctly:</strong></p>
+<pre><code>Symptom: Users couldn&#39;t check out for 23 minutes
+
+Why? → Payment service was returning 503
+Why? → Payment service pods were in CrashLoopBackOff
+Why? → OOMKill: memory limit was 256Mi
+Why? → Memory limit set in Helm values was copied from staging without adjustment
+Why? → There is no process to validate resource limits before production deployment
+
+Root cause: Missing validation process in deployment workflow
+(Not: &quot;engineer made a mistake copying the value&quot;)</code></pre>
+<p><strong>Effective post-mortem structure:</strong></p>
+<div class="sourceCode" id="cb33"><pre
+class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a><span class="fu">## [Service] incident [date] — [brief description]</span></span>
+<span id="cb33-2"><a href="#cb33-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb33-3"><a href="#cb33-3" aria-hidden="true" tabindex="-1"></a>**Severity:** SEV2</span>
+<span id="cb33-4"><a href="#cb33-4" aria-hidden="true" tabindex="-1"></a>**Duration:** 14:32–14:55 UTC (23 minutes)</span>
+<span id="cb33-5"><a href="#cb33-5" aria-hidden="true" tabindex="-1"></a>**Impact:** All users in EU region unable to complete checkout</span>
+<span id="cb33-6"><a href="#cb33-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb33-7"><a href="#cb33-7" aria-hidden="true" tabindex="-1"></a><span class="fu">## Timeline</span></span>
+<span id="cb33-8"><a href="#cb33-8" aria-hidden="true" tabindex="-1"></a><span class="co">[</span><span class="ot">All times UTC</span><span class="co">]</span></span>
+<span id="cb33-9"><a href="#cb33-9" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>14:32 — Alert fires: <span class="in">`PaymentService5xxRate &gt; 5%`</span> (page sent)</span>
+<span id="cb33-10"><a href="#cb33-10" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>14:34 — On-call acknowledges. Checks dashboards: 503 rate 100%.</span>
+<span id="cb33-11"><a href="#cb33-11" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>14:37 — Finds payment pods in CrashLoopBackOff</span>
+<span id="cb33-12"><a href="#cb33-12" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>14:39 — Identifies OOMKill in events: <span class="in">`Killed process 1 (payment-svc) due to OOM`</span></span>
+<span id="cb33-13"><a href="#cb33-13" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>14:41 — Memory limit raised from 256Mi to 1Gi. Pod restarts.</span>
+<span id="cb33-14"><a href="#cb33-14" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>14:43 — Pod healthy, error rate drops to 0%</span>
+<span id="cb33-15"><a href="#cb33-15" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>14:55 — Monitoring normalised. Incident resolved.</span>
+<span id="cb33-16"><a href="#cb33-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb33-17"><a href="#cb33-17" aria-hidden="true" tabindex="-1"></a><span class="fu">## Root cause</span></span>
+<span id="cb33-18"><a href="#cb33-18" aria-hidden="true" tabindex="-1"></a>A PR that tuned memory settings for the staging environment was merged without</span>
+<span id="cb33-19"><a href="#cb33-19" aria-hidden="true" tabindex="-1"></a>adjusting the production override. The deployment pipeline doesn&#39;t validate that</span>
+<span id="cb33-20"><a href="#cb33-20" aria-hidden="true" tabindex="-1"></a>production resource limits match observed memory usage before deployment.</span>
+<span id="cb33-21"><a href="#cb33-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb33-22"><a href="#cb33-22" aria-hidden="true" tabindex="-1"></a><span class="fu">## Contributing factors</span></span>
+<span id="cb33-23"><a href="#cb33-23" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>No Helm diff review step that highlights resource changes</span>
+<span id="cb33-24"><a href="#cb33-24" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>No memory trending alert to catch gradual growth before the limit was hit</span>
+<span id="cb33-25"><a href="#cb33-25" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>No runbook for OOMKill diagnosis (added time to identify root cause)</span>
+<span id="cb33-26"><a href="#cb33-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb33-27"><a href="#cb33-27" aria-hidden="true" tabindex="-1"></a><span class="fu">## What went well</span></span>
+<span id="cb33-28"><a href="#cb33-28" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Alert fired within 2 minutes of the first OOMKill</span>
+<span id="cb33-29"><a href="#cb33-29" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>On-call identified root cause within 5 minutes</span>
+<span id="cb33-30"><a href="#cb33-30" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Fix was fast (limit increase, pod restart)</span>
+<span id="cb33-31"><a href="#cb33-31" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb33-32"><a href="#cb33-32" aria-hidden="true" tabindex="-1"></a><span class="fu">## What went wrong</span></span>
+<span id="cb33-33"><a href="#cb33-33" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>No alert for &quot;memory limit &lt; memory usage trend&quot; — silent drift</span>
+<span id="cb33-34"><a href="#cb33-34" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Took 7 minutes from alert to identifying OOMKill (runbook gap)</span>
+<span id="cb33-35"><a href="#cb33-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb33-36"><a href="#cb33-36" aria-hidden="true" tabindex="-1"></a><span class="fu">## Action items</span></span>
+<span id="cb33-37"><a href="#cb33-37" aria-hidden="true" tabindex="-1"></a>| Item | Owner | Priority | Due |</span>
+<span id="cb33-38"><a href="#cb33-38" aria-hidden="true" tabindex="-1"></a>|------|-------|----------|-----|</span>
+<span id="cb33-39"><a href="#cb33-39" aria-hidden="true" tabindex="-1"></a>| Add alert: memory.current &gt; 80% of memory.limit for 5m | @platform | P1 | 2024-07-01 |</span>
+<span id="cb33-40"><a href="#cb33-40" aria-hidden="true" tabindex="-1"></a>| Add Helm diff to deployment pipeline highlighting resource changes | @platform | P2 | 2024-07-15 |</span>
+<span id="cb33-41"><a href="#cb33-41" aria-hidden="true" tabindex="-1"></a>| Write OOMKill diagnosis runbook | @oncall | P2 | 2024-07-08 |</span>
+<span id="cb33-42"><a href="#cb33-42" aria-hidden="true" tabindex="-1"></a>| Add VPA recommendation reports to weekly operations review | @team | P3 | 2024-07-22 |</span></code></pre></div>
+<h3 id="chaos-engineering">5.3 Chaos engineering</h3>
+<p><strong>Principles:</strong></p>
+<ol type="1">
+<li>Define a steady-state hypothesis (“p99 latency will be &lt; 200ms
+with error rate &lt; 0.1%”)</li>
+<li>Vary one thing at a time</li>
+<li>Start with small blast radius (staging → small prod canary → full
+prod)</li>
+<li>Have an abort condition (rollback plan before you start)</li>
+<li>Run during business hours with full team available</li>
+</ol>
+<div class="sourceCode" id="cb34"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a><span class="co"># chaos-mesh: pod failure experiment</span></span>
+<span id="cb34-2"><a href="#cb34-2" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> chaos-mesh.org/v1alpha1</span></span>
+<span id="cb34-3"><a href="#cb34-3" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> PodChaos</span></span>
+<span id="cb34-4"><a href="#cb34-4" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb34-5"><a href="#cb34-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> api-pod-failure</span></span>
+<span id="cb34-6"><a href="#cb34-6" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">namespace</span><span class="kw">:</span><span class="at"> chaos-testing</span></span>
+<span id="cb34-7"><a href="#cb34-7" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb34-8"><a href="#cb34-8" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">action</span><span class="kw">:</span><span class="at"> pod-kill</span></span>
+<span id="cb34-9"><a href="#cb34-9" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">mode</span><span class="kw">:</span><span class="at"> random-max-percent</span></span>
+<span id="cb34-10"><a href="#cb34-10" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">value</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;20&quot;</span><span class="co">          # Kill up to 20% of matching pods</span></span>
+<span id="cb34-11"><a href="#cb34-11" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">selector</span><span class="kw">:</span></span>
+<span id="cb34-12"><a href="#cb34-12" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">namespaces</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">production</span><span class="kw">]</span></span>
+<span id="cb34-13"><a href="#cb34-13" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">labelSelectors</span><span class="kw">:</span></span>
+<span id="cb34-14"><a href="#cb34-14" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">app</span><span class="kw">:</span><span class="at"> api</span></span>
+<span id="cb34-15"><a href="#cb34-15" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">scheduler</span><span class="kw">:</span></span>
+<span id="cb34-16"><a href="#cb34-16" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">cron</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;@every 10m&quot;</span></span>
+<span id="cb34-17"><a href="#cb34-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb34-18"><a href="#cb34-18" aria-hidden="true" tabindex="-1"></a><span class="pp">---</span></span>
+<span id="cb34-19"><a href="#cb34-19" aria-hidden="true" tabindex="-1"></a><span class="co"># Network partition: introduce 200ms latency to DB traffic</span></span>
+<span id="cb34-20"><a href="#cb34-20" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> chaos-mesh.org/v1alpha1</span></span>
+<span id="cb34-21"><a href="#cb34-21" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> NetworkChaos</span></span>
+<span id="cb34-22"><a href="#cb34-22" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb34-23"><a href="#cb34-23" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> db-latency</span></span>
+<span id="cb34-24"><a href="#cb34-24" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb34-25"><a href="#cb34-25" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">action</span><span class="kw">:</span><span class="at"> delay</span></span>
+<span id="cb34-26"><a href="#cb34-26" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">mode</span><span class="kw">:</span><span class="at"> all</span></span>
+<span id="cb34-27"><a href="#cb34-27" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">selector</span><span class="kw">:</span></span>
+<span id="cb34-28"><a href="#cb34-28" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">namespaces</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">production</span><span class="kw">]</span></span>
+<span id="cb34-29"><a href="#cb34-29" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">labelSelectors</span><span class="kw">:</span></span>
+<span id="cb34-30"><a href="#cb34-30" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">app</span><span class="kw">:</span><span class="at"> api</span></span>
+<span id="cb34-31"><a href="#cb34-31" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">delay</span><span class="kw">:</span></span>
+<span id="cb34-32"><a href="#cb34-32" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">latency</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;200ms&quot;</span></span>
+<span id="cb34-33"><a href="#cb34-33" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">correlation</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;50&quot;</span></span>
+<span id="cb34-34"><a href="#cb34-34" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">jitter</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;100ms&quot;</span></span>
+<span id="cb34-35"><a href="#cb34-35" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">direction</span><span class="kw">:</span><span class="at"> to</span></span>
+<span id="cb34-36"><a href="#cb34-36" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">target</span><span class="kw">:</span></span>
+<span id="cb34-37"><a href="#cb34-37" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">selector</span><span class="kw">:</span></span>
+<span id="cb34-38"><a href="#cb34-38" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">namespaces</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">production</span><span class="kw">]</span></span>
+<span id="cb34-39"><a href="#cb34-39" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">labelSelectors</span><span class="kw">:</span></span>
+<span id="cb34-40"><a href="#cb34-40" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">app</span><span class="kw">:</span><span class="at"> postgres</span></span>
+<span id="cb34-41"><a href="#cb34-41" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">mode</span><span class="kw">:</span><span class="at"> all</span></span>
+<span id="cb34-42"><a href="#cb34-42" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">duration</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;5m&quot;</span></span>
+<span id="cb34-43"><a href="#cb34-43" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb34-44"><a href="#cb34-44" aria-hidden="true" tabindex="-1"></a><span class="pp">---</span></span>
+<span id="cb34-45"><a href="#cb34-45" aria-hidden="true" tabindex="-1"></a><span class="co"># Memory pressure: fill up container memory</span></span>
+<span id="cb34-46"><a href="#cb34-46" aria-hidden="true" tabindex="-1"></a><span class="fu">apiVersion</span><span class="kw">:</span><span class="at"> chaos-mesh.org/v1alpha1</span></span>
+<span id="cb34-47"><a href="#cb34-47" aria-hidden="true" tabindex="-1"></a><span class="fu">kind</span><span class="kw">:</span><span class="at"> StressChaos</span></span>
+<span id="cb34-48"><a href="#cb34-48" aria-hidden="true" tabindex="-1"></a><span class="fu">metadata</span><span class="kw">:</span></span>
+<span id="cb34-49"><a href="#cb34-49" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> memory-stress</span></span>
+<span id="cb34-50"><a href="#cb34-50" aria-hidden="true" tabindex="-1"></a><span class="fu">spec</span><span class="kw">:</span></span>
+<span id="cb34-51"><a href="#cb34-51" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">mode</span><span class="kw">:</span><span class="at"> one</span></span>
+<span id="cb34-52"><a href="#cb34-52" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">selector</span><span class="kw">:</span></span>
+<span id="cb34-53"><a href="#cb34-53" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">namespaces</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">staging</span><span class="kw">]</span></span>
+<span id="cb34-54"><a href="#cb34-54" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">labelSelectors</span><span class="kw">:</span></span>
+<span id="cb34-55"><a href="#cb34-55" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">app</span><span class="kw">:</span><span class="at"> api</span></span>
+<span id="cb34-56"><a href="#cb34-56" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">stressors</span><span class="kw">:</span></span>
+<span id="cb34-57"><a href="#cb34-57" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">memory</span><span class="kw">:</span></span>
+<span id="cb34-58"><a href="#cb34-58" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">workers</span><span class="kw">:</span><span class="at"> </span><span class="dv">2</span></span>
+<span id="cb34-59"><a href="#cb34-59" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">size</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;256MB&quot;</span></span>
+<span id="cb34-60"><a href="#cb34-60" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">duration</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;10m&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb35"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb35-1"><a href="#cb35-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Observe during chaos experiment</span></span>
+<span id="cb35-2"><a href="#cb35-2" aria-hidden="true" tabindex="-1"></a><span class="ex">watch</span> <span class="at">-n1</span> <span class="st">&#39;kubectl get pods -n production | grep -v Running | grep -v Completed&#39;</span></span>
+<span id="cb35-3"><a href="#cb35-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Watch SLO burn rate on dashboard</span></span>
+<span id="cb35-4"><a href="#cb35-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Watch error rate in Grafana</span></span>
+<span id="cb35-5"><a href="#cb35-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb35-6"><a href="#cb35-6" aria-hidden="true" tabindex="-1"></a><span class="co"># After experiment:</span></span>
+<span id="cb35-7"><a href="#cb35-7" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> delete podchaos api-pod-failure <span class="at">-n</span> chaos-testing</span>
+<span id="cb35-8"><a href="#cb35-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb35-9"><a href="#cb35-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Export results for post-experiment review</span></span>
+<span id="cb35-10"><a href="#cb35-10" aria-hidden="true" tabindex="-1"></a><span class="ex">chaos-mesh-dashboard</span> export-experiment api-pod-failure</span></code></pre></div>
+<hr />
+<h2 id="common-misconceptions">Common misconceptions</h2>
+<table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Misconception</th>
+<th>Reality</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>“We need 100% uptime”</td>
+<td>100% SLO means no deployments ever. 99.9% = 43 min/month of
+budget.</td>
+</tr>
+<tr class="even">
+<td>“Average latency is the right SLI”</td>
+<td>p99 or p99.9 matters. Averages hide the long tail that drives user
+complaints.</td>
+</tr>
+<tr class="odd">
+<td>“More labels = better metrics”</td>
+<td>More labels = more cardinality = more memory = slower queries. Label
+sparingly.</td>
+</tr>
+<tr class="even">
+<td>“Traces replace logs”</td>
+<td>No. Traces show the flow between services. Logs show what happened
+within one service. You need both.</td>
+</tr>
+<tr class="odd">
+<td>“Post-mortems find the person who caused the incident”</td>
+<td>Blameless post-mortems find system conditions that allowed the
+incident to happen.</td>
+</tr>
+<tr class="even">
+<td>“Chaos engineering breaks things”</td>
+<td>Chaos engineering reveals failures that already exist in the system
+before users find them.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="hands-on-exercises">Hands-on exercises</h2>
+<ol type="1">
+<li>Find the highest-cardinality metric in a Prometheus instance. Trace
+it back to the label causing the explosion. Write a
+<code>metric_relabel_config</code> to fix it without dropping the
+metric.</li>
+<li>Instrument a multi-service application with OTel (two services, one
+calling the other). Verify trace continuity (same trace_id) in Jaeger or
+Tempo. Add a custom span event for a business event.</li>
+<li>Calculate the error budget for a 99.95% SLO over 28 days, with 500k
+requests/day. Write the PromQL burn rate query. Set up the fast-burn
+page alert.</li>
+<li>Write a complete blameless post-mortem for a real or hypothetical
+incident. Include a 5-Whys chain that leads to a systemic root
+cause.</li>
+<li>Run a chaos-mesh pod failure experiment. Monitor your SLO burn rate
+during the experiment. Verify that your service degrades gracefully
+(circuit breakers, retries work).</li>
+</ol>
+<hr />
+<h2 id="what-to-study-next-phase-4-architecture-design">What to study
+next → <a href="phase4-architecture-design.html">Phase 4 — Architecture
+&amp; Design</a></h2>
+<p>Phase 4 moves from building and operating systems to designing them —
+multi-region high availability, platform engineering, FinOps, and
+zero-trust security architecture.</p>
+    <div class="phase-nav-foot">
+        <a href="phase2-kubernetes-mastery.html"><span class="label">&larr; previous</span>Phase 2 — Kubernetes Mastery</a>
+            <a href="phase4-architecture-design.html" class="next"><span class="label">next &rarr;</span>Phase 4 — Architecture & Design</a>
+      </div>
+  </div>
+
+<footer class="site-footer">
+  senior cloud engineer study system — generated reference material, not affiliated with any employer
+</footer>
+
+</body>
+</html>

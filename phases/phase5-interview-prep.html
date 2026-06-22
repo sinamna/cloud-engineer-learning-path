@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 5 — Interview Prep — Senior Cloud Engineer Study System</title>
+<meta name="description" content="System design, behavioral questions, knowledge quiz, common gaps">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a href="../index.html" class="topbar-brand"><span class="dot"></span>cloud-engineer-deepdive</a>
+    <nav class="topbar-nav">
+      <a href="../index.html">index</a>
+      <a href="../phases/phase1-foundation-gaps.html">01 foundation</a>
+      <a href="../phases/phase2-kubernetes-mastery.html">02 kubernetes</a>
+      <a href="../phases/phase3-observability-sre.html">03 observability</a>
+      <a href="../phases/phase4-architecture-design.html">04 architecture</a>
+      <a href="../phases/phase5-interview-prep.html" class="active">05 interview</a>
+    </nav>
+  </div>
+</div>
+
+<div class="page-wrap">
+  <div class="doc-eyebrow">05 / 05 — interview prep</div>
+<h1 id="phase-5-interview-prep">Phase 5 — Interview Prep</h1>
+<h2
+id="system-design-behavioral-questions-knowledge-quiz-common-gaps">System
+Design, Behavioral Questions, Knowledge Quiz, Common Gaps</h2>
+<blockquote>
+<p>Interview preparation as a discipline: not memorising answers, but
+building the frameworks that generate correct answers under
+pressure.</p>
+</blockquote>
+<hr />
+<h2 id="interview-strategy-overview">Interview strategy overview</h2>
+<p>Senior cloud engineering interviews test four things, in this
+priority order:</p>
+<ol type="1">
+<li><strong>Systems thinking</strong> — can you reason about tradeoffs,
+failure modes, and scale?</li>
+<li><strong>Technical depth</strong> — do you have genuine understanding
+below the surface?</li>
+<li><strong>Communication</strong> — can you explain complex ideas
+clearly under time pressure?</li>
+<li><strong>Experience</strong> — have you operated real systems and
+learned from them?</li>
+</ol>
+<p>The mistake most engineers make: they prepare answers to questions.
+Prepare frameworks instead — systematic ways of thinking through any
+problem in the domain. An interviewer who asks “design a message queue”
+is really asking “show me how you think about distributed systems.”</p>
+<hr />
+<h2 id="system-design-methodology-and-scenarios">1. System design —
+methodology and scenarios</h2>
+<h3 id="the-universal-system-design-framework">1.1 The universal system
+design framework</h3>
+<p>Use this for every system design question, regardless of the specific
+system:</p>
+<pre><code>Phase 1: Clarify (5 minutes)
+  - Functional requirements: what does the system do?
+  - Non-functional requirements: scale, latency, availability, consistency?
+  - Constraints: existing stack, team size, budget, timeline?
+  - Scope: what&#39;s in and out of scope for this design session?
+
+Phase 2: Estimate (3 minutes)
+  - Order of magnitude: QPS, storage, bandwidth
+  - Identify if this is read-heavy, write-heavy, or balanced
+  - Identify the bottleneck components early
+
+Phase 3: High-level design (10 minutes)
+  - Draw the major components and their relationships
+  - Define the data model (what&#39;s stored where)
+  - Define the API contracts (what does each component expose?)
+  - Don&#39;t go deep yet — validate the overall shape
+
+Phase 4: Deep dive (20 minutes)
+  - Interviewer will pick 1-2 components to go deep on
+  - OR you say &quot;the most interesting/challenging part is X, let me go deep&quot;
+  - This is where you show your actual depth
+
+Phase 5: Tradeoffs and evolution (5 minutes)
+  - What would you change if scale increased 10×?
+  - What are the failure modes and mitigations?
+  - What would you simplify for an MVP vs the full design?</code></pre>
+<p><strong>What interviewers are evaluating at each phase:</strong></p>
+<table>
+<colgroup>
+<col style="width: 26%" />
+<col style="width: 73%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Phase</th>
+<th>What they watch for</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Clarify</td>
+<td>Do you ask the right questions? Do you drive toward concrete
+requirements?</td>
+</tr>
+<tr class="even">
+<td>Estimate</td>
+<td>Back-of-envelope comfort. Can you size systems?</td>
+</tr>
+<tr class="odd">
+<td>High-level</td>
+<td>Do you know the building blocks? Are the components sensible?</td>
+</tr>
+<tr class="even">
+<td>Deep dive</td>
+<td>Do you have genuine depth or just buzzword recognition?</td>
+</tr>
+<tr class="odd">
+<td>Tradeoffs</td>
+<td>Senior engineers say “it depends” and mean it with specifics</td>
+</tr>
+</tbody>
+</table>
+<h3 id="scenario-high-throughput-event-streaming-platform">1.2 Scenario:
+high-throughput event streaming platform</h3>
+<p><strong>Prompt:</strong> “Design a messaging system that can handle 1
+million messages per second, with guaranteed delivery and the ability to
+replay messages.”</p>
+<p><strong>Clarifying questions to ask:</strong> - What’s the message
+size distribution? (small ≤1KB vs large ≤1MB changes storage
+architecture) - What delivery semantics? (at-least-once, exactly-once,
+at-most-once) - What’s the required replay window? (1 day, 7 days,
+forever) - What’s the consumer model? (push vs pull, fan-out factor,
+consumer group behaviour) - Latency requirements? (&lt; 10ms
+publish-to-consume? &lt; 1s?) - Ordering requirements? (global order?
+per-partition order? per-key order?)</p>
+<p><strong>High-level design:</strong></p>
+<pre><code>Producers → Load balancer → Broker cluster (partitioned log) → Consumer groups
+                                    ↓
+                             Object storage (long-term retention)
+                                    ↑
+                             Replay consumer (reads from offset X)</code></pre>
+<p><strong>Partitioned log — the core data structure:</strong></p>
+<p>The fundamental abstraction: an append-only, ordered, immutable log
+divided into partitions. Each partition is an independent ordered
+sequence. Consumers track their offset within each partition.</p>
+<pre><code>Partition 0: [msg1][msg3][msg7][msg12]...  offset: 0,1,2,3...
+Partition 1: [msg2][msg5][msg8][msg13]...
+Partition 2: [msg4][msg6][msg9][msg14]...</code></pre>
+<p><strong>Estimating storage:</strong></p>
+<pre><code>1M messages/sec × 1KB average size = 1GB/sec ingestion
+7-day retention: 1GB/sec × 86400 × 7 = ~605TB
+With 3× replication: ~1.8PB
+
+For 1M msg/sec throughput:
+  Each broker handles ~200MB/sec write (sequential, which NVMe can do at 3GB/sec)
+  5-6 brokers sufficient for write throughput
+  Consumer fan-out (100 consumers) requires 100GB/sec read throughput
+  → 50+ brokers, or tiered storage to object store for consumers</code></pre>
+<p><strong>Leader/follower replication for durability:</strong></p>
+<pre><code>Producer sends to partition leader
+  → Leader appends to log segment (local disk)
+  → Leader sends to ISR (In-Sync Replicas) — followers with lag &lt; threshold
+  → Once majority of ISR acknowledge → mark as committed → return ACK to producer
+  → If leader fails → elect new leader from ISR → no data loss for committed messages</code></pre>
+<p><strong>Deep dive: consumer groups and offset
+management:</strong></p>
+<pre><code>Consumer group: set of consumers sharing work on a topic
+  - Each partition is assigned to exactly one consumer in the group
+  - Adding consumers to a group → rebalance → partitions redistributed
+  - Removing consumers → rebalance → surviving consumers take over partitions
+
+Offset commits:
+  - Consumer reads message → processes it → commits offset
+  - If consumer crashes before commit: message replayed (at-least-once)
+  - For exactly-once: transactional offset commits (write output + commit offset atomically)
+
+Rebalance protocols:
+  - Eager (stop-the-world): all consumers release all partitions, then re-assign
+  - Cooperative (incremental): only affected partitions are moved — reduces downtime</code></pre>
+<p><strong>Failure modes:</strong></p>
+<pre><code>Partition leader failure:
+  → Controller detects via heartbeat timeout
+  → New leader elected from ISR
+  → Clients reconnect to new leader
+  → Duration: typically 1-5 seconds
+
+Broker failure (non-leader):
+  → Partitions where this broker was replica: replica count drops
+  → Other ISR members catch up from leader
+  → If replica count drops below min.insync.replicas: writes rejected (prevent data loss)
+
+Consumer failure:
+  → Group rebalance triggered
+  → Partitions redistributed
+  → New consumer starts from last committed offset
+
+Full cluster outage:
+  → Messages accumulated in producer retry buffer (configurable)
+  → After timeout: producers return errors
+  → Consumers: no new data until cluster restores</code></pre>
+<hr />
+<h3 id="scenario-multi-tenant-kubernetes-platform">1.3 Scenario:
+multi-tenant Kubernetes platform</h3>
+<p><strong>Prompt:</strong> “Design a Kubernetes platform for 100
+engineering teams. Each team has different compliance requirements: some
+handle PCI-DSS data, some handle GDPR-sensitive data, most handle
+neither.”</p>
+<p><strong>Clarifying questions:</strong> - How many teams? What’s the
+average number of services per team? - What does “different compliance”
+mean operationally? Network isolation? Audit logs? Encryption at rest? -
+Single cluster or multi-cluster? - What’s the team’s Kubernetes
+experience level? - What’s the approval process for new services? - What
+cloud provider? Managed Kubernetes or self-managed?</p>
+<p><strong>Isolation model decision:</strong></p>
+<pre><code>Option A: Single cluster, namespace-per-team
+  Pros: Simple, cheap, easy management
+  Cons: Noisy neighbour (CPU/memory), etcd size limits (~500MB practical),
+        shared kernel (security risk for different trust levels)
+
+Option B: Namespace-per-team in shared cluster + dedicated cluster for PCI/GDPR
+  Pros: Balanced; most teams share infrastructure, sensitive workloads isolated
+  Cons: Two clusters to manage, application teams must know which cluster
+
+Option C: Cluster-per-team
+  Pros: Maximum isolation
+  Cons: 100 clusters to maintain, cost, operational overhead
+  → Only appropriate if teams are large (10+ engineers) or have strict isolation needs
+
+Recommended: B — tiered isolation based on compliance needs</code></pre>
+<p><strong>Namespace-per-team configuration (automated via
+Operator):</strong></p>
+<div class="sourceCode" id="cb9"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Team operator creates these resources per TeamNamespace CRD</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="fu">ResourceQuota</span><span class="kw">:</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">requests.cpu</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;20&quot;</span><span class="co">          # Team gets 20 CPU cores</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">requests.memory</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;40Gi&quot;</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">limits.cpu</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;40&quot;</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">limits.memory</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;80Gi&quot;</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">count/pods</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;100&quot;</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">count/services</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;20&quot;</span></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">count/persistentvolumeclaims</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;10&quot;</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a><span class="fu">LimitRange</span><span class="kw">:</span></span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">default</span><span class="kw">:</span></span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">cpu</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;100m&quot;</span></span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">memory</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;256Mi&quot;</span></span>
+<span id="cb9-15"><a href="#cb9-15" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">defaultRequest</span><span class="kw">:</span></span>
+<span id="cb9-16"><a href="#cb9-16" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">cpu</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;50m&quot;</span></span>
+<span id="cb9-17"><a href="#cb9-17" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">memory</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;128Mi&quot;</span></span>
+<span id="cb9-18"><a href="#cb9-18" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">max</span><span class="kw">:</span></span>
+<span id="cb9-19"><a href="#cb9-19" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">cpu</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;4&quot;</span></span>
+<span id="cb9-20"><a href="#cb9-20" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">memory</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;8Gi&quot;</span></span>
+<span id="cb9-21"><a href="#cb9-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-22"><a href="#cb9-22" aria-hidden="true" tabindex="-1"></a><span class="fu">NetworkPolicy (default-deny + allow ingress)</span><span class="kw">:</span></span>
+<span id="cb9-23"><a href="#cb9-23" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> deny all ingress by default</span></span>
+<span id="cb9-24"><a href="#cb9-24" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> allow from ingress controller namespace</span></span>
+<span id="cb9-25"><a href="#cb9-25" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> allow within same namespace</span></span>
+<span id="cb9-26"><a href="#cb9-26" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> allow egress to kube-dns (UDP 53)</span></span>
+<span id="cb9-27"><a href="#cb9-27" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> allow egress to same namespace</span></span>
+<span id="cb9-28"><a href="#cb9-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-29"><a href="#cb9-29" aria-hidden="true" tabindex="-1"></a><span class="fu">RBAC</span><span class="kw">:</span></span>
+<span id="cb9-30"><a href="#cb9-30" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">Team members</span><span class="kw">:</span><span class="at"> edit role (no RBAC changes, no NetworkPolicy changes)</span></span>
+<span id="cb9-31"><a href="#cb9-31" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">Team leads</span><span class="kw">:</span><span class="at"> custom role (can create ServiceAccounts for CI/CD)</span></span></code></pre></div>
+<p><strong>PCI-DSS workloads (dedicated cluster):</strong></p>
+<pre><code>Additional requirements:
+  - Network: all traffic through WAF + DPI, egress whitelist only
+  - Encryption: etcd encrypted at rest (kms-plugin), all secrets encrypted
+  - Audit: full Kubernetes audit log, API access logged to SIEM
+  - Images: signed images only (Cosign + ImagePolicyWebhook)
+  - Nodes: dedicated hardware (no multi-tenancy), IMDSv2 only on AWS
+  - Secrets: Vault with HSM backend, no Kubernetes Secrets for credentials
+  - Scanning: runtime security (Falco), continuous vulnerability scanning</code></pre>
+<hr />
+<h3 id="scenario-observability-platform">1.4 Scenario: observability
+platform</h3>
+<p><strong>Prompt:</strong> “Design an observability platform for 500
+microservices generating 50 million metric data points per second.”</p>
+<p><strong>Estimating storage:</strong></p>
+<pre><code>50M samples/sec
+  Prometheus compressed: ~1.5 bytes/sample (XOR encoding)
+  50M × 1.5B = 75MB/sec ingestion rate
+  90-day retention: 75MB × 86400 × 90 = ~583TB
+
+In practice, use tiered storage:
+  Hot tier (&lt; 2h): Prometheus memory (in-head block)
+  Warm tier (2h to 30d): Remote storage (Thanos/Cortex/Mimir) on fast SSD
+  Cold tier (30d to 90d): Object storage (S3/GCS) — 10-100× cheaper than SSD</code></pre>
+<p><strong>Architecture options:</strong></p>
+<pre><code>Option A: Prometheus + Thanos (your existing knowledge area)
+  Federated Prometheus (one per cluster) + Thanos for global aggregation
+  Pros: mature, well-understood, battle-tested
+  Cons: Prometheus memory limits (~2M series per instance), complex at this scale
+
+Option B: Grafana Mimir (horizontally scalable, drop-in Prometheus-compatible)
+  Single binary or microservices mode
+  Pros: unlimited horizontal scale, object storage native, multi-tenancy built-in
+  Cons: more complex operational model than vanilla Prometheus
+
+Option C: VictoriaMetrics
+  Pros: very high ingestion rate (5× Prometheus on same hardware), low resource usage
+  Cons: different query dialect (MetricsQL, mostly compatible)</code></pre>
+<p><strong>For 50M samples/sec, choose Mimir or
+VictoriaMetrics.</strong> Prometheus has practical limits around 1-2M
+active series per instance and would require 25-50 instances for this
+scale, with complex federation.</p>
+<p><strong>Mimir architecture (microservices mode):</strong></p>
+<pre><code>Producers (Prometheus instances, OTel collectors)
+    ↓ remote_write
+Distributor (fan-out to ingesters based on hash ring, validates, deduplicates)
+    ↓
+Ingester (writes to WAL, holds last 2h in memory, streams to object store)
+    ↓
+Object store (S3/GCS — long-term storage as Parquet blocks)
+    ↓ (at query time)
+Store Gateway (queries object store, caches index)
+Querier (merges results from ingesters + store gateway)
+Query Frontend (caches queries, splits large range queries, deduplicates)
+    ↓
+Grafana</code></pre>
+<hr />
+<h2 id="behavioral-questions-frameworks">2. Behavioral questions —
+frameworks</h2>
+<h3 id="the-star-format-and-why-it-works">2.1 The STAR format and why it
+works</h3>
+<p><strong>S</strong>ituation, <strong>T</strong>ask,
+<strong>A</strong>ction, <strong>R</strong>esult.</p>
+<p>STAR works because interviewers need concrete evidence, not
+assertions. “I’m good at debugging” is an assertion. “I identified a
+300ms p99 spike every 100ms in a NATS consumer and traced it to CPU
+throttling from a misconfigured cgroup quota” is evidence.</p>
+<p><strong>Common failure modes:</strong> - Too much Situation (3
+minutes explaining context, 30 seconds on Action) - Vague Actions (“we
+investigated and fixed it”) — go specific - No Result (“it was better
+after”) — always have a number - No reflection (“the lesson was…”) —
+senior engineers learn from experiences</p>
+<p><strong>Timing target:</strong> 2-3 minutes per answer, 90 seconds
+maximum on Situation + Task.</p>
+<h3
+id="key-behavioral-themes-and-what-interviewers-are-really-testing">2.2
+Key behavioral themes and what interviewers are really testing</h3>
+<p><strong>“Tell me about the most complex infrastructure problem you’ve
+solved.”</strong></p>
+<p><em>What they’re testing:</em> Technical depth, systematic thinking,
+ability to navigate ambiguity</p>
+<p><em>Strong answer elements:</em> - Problem had multiple possible
+causes (you had to narrow it down systematically) - Required
+understanding multiple system layers (not just “I bumped the config”) -
+Had business impact (why it mattered) - You learned something that
+changed how you design systems - Result was measurable</p>
+<p><strong>“Describe a time you disagreed with a technical
+decision.”</strong></p>
+<p><em>What they’re testing:</em> Collaboration, communication,
+maturity</p>
+<p><em>Strong answer elements:</em> - You had a valid technical reason
+(not preference) - You raised it constructively with data/evidence, not
+just opinion - You listened to the counter-argument genuinely - You
+committed to the decision once made, even if you disagreed - What
+happened (did your concern materialise? Were you wrong?)</p>
+<p><em>Weak answer:</em> “I raised it and they ignored me.” → Shows you
+can’t influence without authority.</p>
+<p><strong>“Tell me about a production incident you led.”</strong></p>
+<p><em>What they’re testing:</em> Incident management, leadership under
+pressure, learning culture</p>
+<p><em>Strong answer elements:</em> - Clear incident detection story
+(how did you know something was wrong?) - Systematic diagnosis (what you
+checked and why, in order) - Decisive mitigation (how you stopped the
+bleeding before fully understanding the cause) - Post-mortem that found
+a systemic issue (not a person to blame) - Concrete changes that were
+implemented</p>
+<p><strong>“How have you influenced engineers more senior than
+you?”</strong></p>
+<p><em>What they’re testing:</em> Leadership beyond authority,
+communication up</p>
+<p><em>Strong answer elements:</em> - You built a case with data
+(prototype, benchmark, cost analysis) - You understood their concerns
+and addressed them - You found champions, not just opposition - The
+outcome — what happened</p>
+<p><strong>“Describe a situation where you had to make a decision with
+incomplete information.”</strong></p>
+<p><em>What they’re testing:</em> Decision-making under uncertainty</p>
+<p><em>Strong answer elements:</em> - You were explicit about what you
+didn’t know - You identified what could be learned quickly vs required
+long investigation - You made a reversible decision where possible - You
+set a tripwire: “if X happens, we revisit” - What happened (and whether
+you needed to revisit)</p>
+<hr />
+<h2 id="kubernetes-knowledge-quiz">3. Kubernetes knowledge quiz</h2>
+<h3 id="medium">⭐ Medium</h3>
+<p><strong>Q1: What is the full sequence from <code>kubectl apply</code>
+to a pod running?</strong></p>
+<ol type="1">
+<li><code>kubectl</code> serialises the manifest and sends HTTP
+PUT/PATCH to apiserver</li>
+<li>apiserver: AuthN (bearer token / x509 / OIDC) → AuthZ (RBAC) →
+Mutating admission webhooks → Schema validation → Validating admission
+webhooks → Write to etcd</li>
+<li>Scheduler watch fires (new pod with no
+<code>spec.nodeName</code>)</li>
+<li>Scheduler runs filter → score → bind (writes
+<code>spec.nodeName</code>)</li>
+<li>kubelet on target node watches for pods assigned to it</li>
+<li>kubelet calls CRI (containerd) → image pull → create sandbox (pause
+container, shared net/IPC/UTS namespaces)</li>
+<li>CNI called (ADD): allocates IP, creates veth, configures routes</li>
+<li>kubelet calls CRI: create and start containers</li>
+<li>kubelet runs startup probe (if configured), then readiness
+probe</li>
+<li>kubelet reports <code>Running</code> + pod IP to apiserver →
+etcd</li>
+</ol>
+<hr />
+<p><strong>Q2: What determines a pod’s QoS class?</strong></p>
+<ul>
+<li><strong>Guaranteed:</strong> Every container (including
+initContainers) has both CPU and memory request AND limit set, AND
+request == limit for each.</li>
+<li><strong>Burstable:</strong> At least one container has a CPU or
+memory request or limit set, but doesn’t meet Guaranteed.</li>
+<li><strong>BestEffort:</strong> No containers have any resource
+requests or limits.</li>
+</ul>
+<p>QoS affects eviction order (BestEffort evicted first) and OOM kill
+score (Guaranteed: -997, BestEffort: 1000).</p>
+<hr />
+<p><strong>Q3: Explain the difference between a Deployment, StatefulSet,
+and DaemonSet.</strong></p>
+<p><strong>Deployment:</strong> For stateless workloads. Pods are
+fungible — any pod can serve any request. Rolling updates replace pods
+in any order. No stable network identity, no stable storage.</p>
+<p><strong>StatefulSet:</strong> For stateful workloads. Pods have
+stable names (<code>pod-0</code>, <code>pod-1</code>), stable DNS
+hostnames (<code>pod-0.service.ns.svc.cluster.local</code>), and stable
+PVCs (the PVC follows the pod through restarts). Pods are created
+sequentially (0, 1, 2…) and deleted in reverse. Used for: databases,
+Kafka, etcd, anything where instance identity matters.</p>
+<p><strong>DaemonSet:</strong> Ensures exactly one pod runs on each node
+(or subset of nodes). New nodes automatically get the pod; when a node
+is removed, the pod is GC’d. Used for: log collectors, node monitoring
+agents, CNI plugins, storage drivers.</p>
+<hr />
+<p><strong>Q4: What is a PodDisruptionBudget and when does it NOT
+apply?</strong></p>
+<p>A PDB defines the minimum number (or maximum number disrupted) of
+pods that must be available during <strong>voluntary
+disruptions</strong> — node drains (<code>kubectl drain</code>), rolling
+updates, cluster autoscaler scale-down.</p>
+<p>A PDB is checked by the eviction API. If a pod eviction would violate
+the PDB, the eviction is blocked until the PDB can be satisfied.</p>
+<p><strong>PDBs do NOT apply to:</strong> - Node crashes (involuntary
+disruption) - OOMKills - Direct pod deletes (bypassing eviction API) -
+<code>kubectl delete pod --grace-period=0 --force</code></p>
+<hr />
+<p><strong>Q5: How does the Kubernetes scheduler handle a pod that can’t
+schedule?</strong></p>
+<p>If no node passes the filter phase: check if preemption is possible.
+If yes: mark pod with <code>nominatedNodeName</code>, evict
+lower-priority pods, wait for capacity to free. If preemption isn’t
+possible or sufficient: pod stays Pending. The scheduler retries on
+cluster changes (new node added, resources freed).</p>
+<p><code>kubectl describe pod &lt;name&gt;</code> → Events section shows
+exact filter failure reason per node.</p>
+<hr />
+<h3 id="hard">⭐⭐ Hard</h3>
+<p><strong>Q6: Why does CPU throttling happen even when node CPU
+utilisation is low?</strong></p>
+<p>CPU limits are enforced by cgroups CFS (Completely Fair Scheduler)
+quotas. Each container gets a CPU quota: e.g., <code>500m</code> limit =
+<code>cpu.cfs_quota_us=50000</code> per
+<code>cpu.cfs_period_us=100000</code> (100ms period).</p>
+<p>If the container uses its 50ms quota in the first 60ms of a 100ms
+window, it is frozen for the remaining 40ms — even if the node has spare
+CPU. The OS cannot give it more even though other CPUs are idle, because
+the cgroup quota is exhausted for this period.</p>
+<p>This creates 100ms-periodic latency spikes at seemingly random times,
+even on nodes with 20% overall CPU utilisation.</p>
+<p>Metric:
+<code>rate(container_cpu_cfs_throttled_periods_total[5m]) / rate(container_cpu_cfs_periods_total[5m])</code>
+— values &gt; 0.25 are concerning.</p>
+<hr />
+<p><strong>Q7: Explain etcd’s MVCC and why compaction is
+necessary.</strong></p>
+<p>etcd uses Multi-Version Concurrency Control: every write creates a
+new revision rather than updating in place. A global revision counter
+increments on every write. Old revisions are kept — this enables
+<code>etcdctl watch --rev=N</code> (watch from a specific point in
+history) and consistent snapshots.</p>
+<p>Without compaction, revisions accumulate forever. The bbolt database
+file grows unboundedly. Compaction removes revisions older than a
+specified revision, marking the space as reclaimable. Defragmentation
+then rewrites the database file to actually reclaim the disk space
+(compaction doesn’t shrink the file).</p>
+<p>Production recommendation:
+<code>--auto-compaction-mode=periodic --auto-compaction-retention=1h</code>.
+This keeps 1 hour of watch history — enough for controllers to catch up
+after a restart.</p>
+<hr />
+<p><strong>Q8: How does NetworkPolicy enforcement work at the kernel
+level?</strong></p>
+<p>NetworkPolicy is a Kubernetes API object representing desired network
+policy. It does nothing by itself — the CNI plugin implements it.</p>
+<p>With Calico (iptables mode): 1. Calico watches for NetworkPolicy and
+Endpoint objects 2. Generates iptables rules using cali- chain naming 3.
+Packet arriving at a pod’s veth interface traverses
+<code>cali-INPUT</code> chain 4. Chain has rules matching source pod IP
+against policy 5. If no matching allow rule: packet dropped</p>
+<p>With Cilium (eBPF mode): 1. Cilium watches for NetworkPolicy objects
+2. Compiles them into eBPF programs attached to pod’s veth TC (Traffic
+Control) hook 3. Each packet is evaluated against the eBPF program in
+O(1) via hash maps 4. Drop or allow decision made in-kernel before
+sk_buff processing</p>
+<p>eBPF enforcement is faster (no chain traversal), supports L7 (HTTP
+method, path) policies, and scales to thousands of policies without
+degradation.</p>
+<hr />
+<p><strong>Q9: What is the difference between a liveness probe,
+readiness probe, and startup probe? When does each fire?</strong></p>
+<p><strong>Startup probe:</strong> Fires first, during container
+startup. While it’s running, liveness and readiness probes are disabled.
+Allows slow-starting containers without false liveness failures. Once it
+succeeds once, it stops running and liveness takes over.</p>
+<p><strong>Liveness probe:</strong> Fires continuously after startup. If
+it fails, kubelet kills and restarts the container. Use when the
+container can get into a broken state where the only recovery is a
+restart (deadlock, corrupted internal state).</p>
+<p><strong>Readiness probe:</strong> Fires continuously. If it fails,
+the pod is removed from Service endpoints (stops receiving traffic) but
+is NOT restarted. Use for: container is still starting, under temporary
+load, dependency is unavailable. A pod can be live but not ready.</p>
+<hr />
+<p><strong>Q10: Explain how kube-proxy implements ClusterIP services in
+iptables mode.</strong></p>
+<p>When a Service is created with ClusterIP <code>10.96.1.100</code> and
+port 80, kube-proxy creates:</p>
+<ol type="1">
+<li><p>In <code>KUBE-SERVICES</code> chain: a rule matching
+dst=10.96.1.100:80 → jump to <code>KUBE-SVC-&lt;hash&gt;</code></p></li>
+<li><p>In <code>KUBE-SVC-&lt;hash&gt;</code> chain: probabilistic rules
+selecting one of N endpoints:</p>
+<ul>
+<li>Rule 1:
+<code>--probability 0.333 -j KUBE-SEP-&lt;pod1-hash&gt;</code> (33% →
+pod 1)</li>
+<li>Rule 2: <code>--probability 0.5 -j KUBE-SEP-&lt;pod2-hash&gt;</code>
+(50% of remaining 67% = 33% → pod 2)</li>
+<li>Rule 3: <code>-j KUBE-SEP-&lt;pod3-hash&gt;</code> (100% of
+remaining 33% = 33% → pod 3)</li>
+</ul></li>
+<li><p>In <code>KUBE-SEP-&lt;pod-hash&gt;</code> chain: DNAT rule
+replacing dst=10.96.1.100:80 with real pod IP:port</p></li>
+</ol>
+<p>The packet then continues routing with the real pod IP as
+destination. On the return path: SNAT if the pod is on a different
+node.</p>
+<p><strong>Problems with this approach at scale:</strong> Each new
+endpoint requires a rule change across all chains on all nodes. 1000
+endpoints × 1000 pods = O(n²) iptables operations. This is why IPVS mode
+exists, and why Cilium bypasses iptables entirely.</p>
+<hr />
+<h3 id="expert">⭐⭐⭐ Expert</h3>
+<p><strong>Q11: A pod is stuck in <code>Terminating</code> for 4 hours.
+What is happening and how do you fix it?</strong></p>
+<p>The pod has a finalizer set in <code>metadata.finalizers</code>, and
+the controller responsible for removing that finalizer is not running
+(or is broken).</p>
+<p>When you delete a pod, the apiserver sets
+<code>metadata.deletionTimestamp</code>. The object is NOT deleted from
+etcd. Containers continue running normally (the pod is still live). It
+will remain in etcd — and show as <code>Terminating</code> — until all
+finalizers are removed.</p>
+<p><strong>Diagnosis:</strong></p>
+<div class="sourceCode" id="cb14"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> get pod <span class="op">&lt;</span>name<span class="op">&gt;</span> -o jsonpath=<span class="st">&#39;{.metadata.finalizers}&#39;</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> get pod <span class="op">&lt;</span>name<span class="op">&gt;</span> -o jsonpath=<span class="st">&#39;{.metadata.deletionTimestamp}&#39;</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Check which controller should be managing this finalizer</span></span></code></pre></div>
+<p><strong>Fix options:</strong> 1. Restart the controller that manages
+the finalizer (preferred — correct approach) 2. Force-remove the
+finalizer:
+<code>kubectl patch pod &lt;name&gt; -p '{"metadata":{"finalizers":[]}}' --type=merge</code>
+→ This bypasses cleanup — only do this if you understand the
+consequences 3.
+<code>kubectl delete pod &lt;name&gt; --grace-period=0 --force</code> →
+Does NOT help with finalizers; this only bypasses the graceful
+termination grace period</p>
+<hr />
+<p><strong>Q12: Walk through exactly what happens when a Deployment
+rolling update is triggered.</strong></p>
+<pre><code>1. User updates Deployment spec (e.g., new image tag)
+2. Deployment controller detects change (generation incremented)
+3. Controller creates a new ReplicaSet with new pod template
+4. Controller begins scaling: new RS +1 pod, old RS -1 pod
+   (respecting maxSurge and maxUnavailable constraints)
+
+5. For each new pod:
+   a. Pod created in new RS (PodPending)
+   b. Scheduler assigns node
+   c. kubelet starts container
+   d. Startup probe (if configured): if fails, pod restarts
+   e. Readiness probe: pod added to Endpoints only when ready
+   f. Only after pod is Ready does controller proceed with next step
+      (respecting minReadySeconds — pod must be Ready for this long)
+
+6. As new pods become Ready: old RS scaled down
+   Controller verifies: old_unavailable ≤ maxUnavailable, total ≤ desired + maxSurge
+
+7. When new RS reaches desired replicas and all old RS pods are deleted: rollout complete
+   Deployment status: availableReplicas == desiredReplicas
+
+8. Old RS remains (with 0 replicas) for rollback history
+   (revisionHistoryLimit controls how many are kept)</code></pre>
+<p><strong>Common failure scenarios:</strong> - New pod never becomes
+Ready → rollout hangs → readiness probe not configured correctly or app
+has bug - Rollout too slow → increase maxSurge, decrease minReadySeconds
+- Old pods not terminating → preStop hook taking too long, or
+terminationGracePeriodSeconds too short</p>
+<hr />
+<p><strong>Q13: Your cluster has 50 nodes and 5,000 pods. A developer
+reports intermittent 5xx errors on their service, 0.1% error rate, no
+recent deployments. Walk through your diagnosis.</strong></p>
+<p><strong>Step 1: Correlate with time.</strong></p>
+<div class="sourceCode" id="cb16"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Is this constant or bursty?</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a><span class="ex">rate</span><span class="er">(</span><span class="ex">http_requests_total{status=~</span><span class="st">&quot;5..&quot;</span><span class="ex">}[5m]</span><span class="kw">)</span> <span class="ex">vs</span> rate<span class="er">(</span><span class="va">http_requests_total</span><span class="op">[</span><span class="dv">5</span>m<span class="op">]</span><span class="kw">)</span></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a><span class="co"># If bursty: correlate with HPA scaling events, cron jobs, garbage collection</span></span></code></pre></div>
+<p><strong>Step 2: Isolate the affected pods/nodes.</strong></p>
+<div class="sourceCode" id="cb17"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Are errors concentrated on specific pods?</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sum</span> by<span class="er">(</span><span class="ex">pod</span><span class="kw">)</span> <span class="kw">(</span><span class="ex">rate</span><span class="er">(</span><span class="ex">http_requests_total{status=~</span><span class="st">&quot;5..&quot;</span><span class="ex">}[5m]</span><span class="kw">))</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="co"># If yes: that pod has a local issue (resource pressure, disk, network)</span></span></code></pre></div>
+<p><strong>Step 3: Check resource pressure.</strong></p>
+<div class="sourceCode" id="cb18"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="co"># CPU throttling on affected pods?</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a><span class="ex">rate</span><span class="er">(</span><span class="va">container_cpu_cfs_throttled_periods_total</span><span class="op">[</span><span class="dv">5</span>m<span class="op">]</span><span class="kw">)</span> <span class="ex">/</span> rate<span class="er">(</span><span class="va">container_cpu_cfs_periods_total</span><span class="op">[</span><span class="dv">5</span>m<span class="op">]</span><span class="kw">)</span></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Memory pressure?</span></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a><span class="ex">container_memory_working_set_bytes</span> / kube_pod_container_resource_limits{resource=<span class="st">&quot;memory&quot;</span>}</span></code></pre></div>
+<p><strong>Step 4: Check node-level issues.</strong></p>
+<div class="sourceCode" id="cb19"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="co"># conntrack table full? (common at scale, causes new connections to fail)</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="ex">node_nf_conntrack_entries</span> / node_nf_conntrack_entries_limit</span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a><span class="co"># &gt; 0.8 is dangerous; &gt; 0.9 causes packet drops</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a><span class="co"># DNS pressure (slow DNS = intermittent failures on new connections)?</span></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a><span class="ex">histogram_quantile</span><span class="er">(</span><span class="ex">0.99,</span> rate<span class="er">(</span><span class="va">coredns_dns_request_duration_seconds_bucket</span><span class="op">[</span><span class="dv">5</span>m<span class="op">]</span><span class="kw">))</span></span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a><span class="co"># &gt; 1s is very slow</span></span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a><span class="co"># kube-proxy iptables not synced?</span></span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a><span class="ex">kubeproxy_sync_proxy_rules_duration_seconds_bucket</span></span></code></pre></div>
+<p><strong>Step 5: Check readiness probe timing.</strong></p>
+<div class="sourceCode" id="cb20"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Pods cycling in/out of Ready state?</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a><span class="ex">kube_pod_container_status_ready{namespace=</span><span class="st">&quot;&lt;ns&gt;&quot;</span><span class="ex">,</span> pod=~<span class="st">&quot;&lt;service&gt;.*&quot;</span>}</span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Drops to 0 intermittently = readiness probe timing issue</span></span></code></pre></div>
+<p><strong>Step 6: Check Endpoints.</strong></p>
+<div class="sourceCode" id="cb21"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> get endpoints <span class="op">&lt;</span>service<span class="op">&gt;</span> -n <span class="op">&lt;</span>ns<span class="op">&gt;</span> -w</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="co"># If endpoints flap (pods added/removed rapidly): readiness probe is too sensitive</span></span></code></pre></div>
+<p><strong>Step 7: Distributed tracing.</strong></p>
+<pre><code>If you have OTel: look for slow spans coinciding with 5xx windows
+This would identify if the error is in this service or a downstream dependency</code></pre>
+<hr />
+<h2 id="common-senior-level-gaps">4. Common senior-level gaps</h2>
+<p><strong>Gap 1: Tool knowledge without theory</strong></p>
+<p><em>Symptom:</em> “I use Cilium” but can’t explain why eBPF is faster
+than iptables. “I use etcd” but don’t know what MVCC means.</p>
+<p><em>Test:</em> For every tool you list on your CV, be able to answer:
+“What problem does this solve? What’s the mechanism? What are its
+failure modes?”</p>
+<hr />
+<p><strong>Gap 2: Operating vs designing</strong></p>
+<p><em>Symptom:</em> Can fix a broken system but can’t design a new one
+from first principles. Knows what to do but not why that’s the right
+choice.</p>
+<p><em>Fix:</em> For every system you’ve operated, write a design
+document as if you were designing it from scratch. What requirements did
+it actually meet? What tradeoffs were made? What would you change?</p>
+<hr />
+<p><strong>Gap 3: Jumping to solutions</strong></p>
+<p><em>Symptom:</em> “Design a message queue” → immediately starts
+describing Kafka internals. Never asked about scale, latency, team size,
+or existing stack.</p>
+<p><em>Fix:</em> Practice spending the first 5 minutes of every design
+problem asking clarifying questions. Time yourself. Stop answering until
+you’ve asked at least 5 questions.</p>
+<hr />
+<p><strong>Gap 4: Not quantifying impact</strong></p>
+<p><em>Symptom:</em> “I improved the system” not “p99 latency dropped
+from 450ms to 12ms, measured over 30 days.”</p>
+<p><em>Fix:</em> Every achievement should have: what changed, how it was
+measured, what the result was in numbers. If you didn’t measure it at
+the time, go back and think about how you would measure it.</p>
+<hr />
+<p><strong>Gap 5: Shallow knowledge at the edges of your
+experience</strong></p>
+<p><em>Symptom:</em> Deep on what you’ve directly operated, shallow on
+things adjacent. Can’t answer follow-up questions on items listed on
+CV.</p>
+<p><em>Fix:</em> For each bullet on your CV, prepare to go 3 levels
+deeper: (1) what you did, (2) why you chose that approach vs
+alternatives, (3) what the mechanism is under the hood.</p>
+<hr />
+<p><strong>Gap 6: Not saying “I don’t know”</strong></p>
+<p><em>Symptom:</em> Confidently answering questions you don’t actually
+know, with plausible-sounding (but wrong) answers.</p>
+<p><em>Fix:</em> “I’m not certain about X, but my reasoning would be…”
+is a strong senior engineer answer. Confident wrong answers disqualify.
+Honest uncertainty with sound reasoning impresses.</p>
+<hr />
+<h2 id="week-preparation-schedule">4-week preparation schedule</h2>
+<h3 id="week-1-foundation">Week 1 — Foundation</h3>
+<ul>
+<li>Day 1-2: Linux internals (Phase 1 §1): namespaces, cgroups, syscalls
+— do the hands-on exercises</li>
+<li>Day 3-4: Networking (Phase 1 §2): TCP state machine, eBPF, CNI —
+capture DNS traffic, trace a packet</li>
+<li>Day 5-7: Distributed systems (Phase 1 §3+4): implement Raft
+pseudocode on paper, explain MVCC</li>
+</ul>
+<h3 id="week-2-kubernetes-depth">Week 2 — Kubernetes depth</h3>
+<ul>
+<li>Day 1-2: Scheduler + Operators (Phase 2 §2+3): write a controller,
+understand the admission flow</li>
+<li>Day 3-4: K8s Networking (Phase 2 §4): reproduce ndots issue, trace
+iptables rules for a Service</li>
+<li>Day 5-7: etcd (Phase 2 §6): compact + defrag a test cluster, measure
+recovery from leader failure</li>
+</ul>
+<h3 id="week-3-observability-architecture">Week 3 — Observability +
+Architecture</h3>
+<ul>
+<li>Day 1-2: Prometheus TSDB (Phase 3 §2): diagnose cardinality, write a
+remote_write config</li>
+<li>Day 3: OTel tracing (Phase 3 §3): instrument a two-service app,
+verify trace continuity</li>
+<li>Day 4-5: SLO engineering (Phase 3 §4): write multi-window burn rate
+alerts for a real service</li>
+<li>Day 6-7: Architecture (Phase 4): design a multi-region system on
+paper, justify each decision</li>
+</ul>
+<h3 id="week-4-interview-simulation">Week 4 — Interview simulation</h3>
+<ul>
+<li>Day 1: Write 5 STAR stories. Time them at &lt; 3 minutes each.</li>
+<li>Day 2-3: Full mock system design (45 minutes): record yourself,
+review pacing and framework usage</li>
+<li>Day 4: Knowledge quiz (Phase 5 §3): all 13 questions, no notes, then
+review gaps</li>
+<li>Day 5-6: Second mock interview. Focus on weakest area from Day 4
+review.</li>
+<li>Day 7: Light review only. Trust the preparation.</li>
+</ul>
+    <div class="phase-nav-foot">
+        <a href="phase4-architecture-design.html"><span class="label">&larr; previous</span>Phase 4 — Architecture & Design</a>
+          </div>
+  </div>
+
+<footer class="site-footer">
+  senior cloud engineer study system — generated reference material, not affiliated with any employer
+</footer>
+
+</body>
+</html>

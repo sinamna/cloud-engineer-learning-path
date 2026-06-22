@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$title$ — Senior Cloud Engineer Study System</title>
+<meta name="description" content="$subtitle$">
+<link rel="stylesheet" href="$cssroot$assets/style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a href="$cssroot$index.html" class="topbar-brand"><span class="dot"></span>cloud-engineer-deepdive</a>
+    <nav class="topbar-nav">
+      <a href="$cssroot$index.html">index</a>
+      <a href="$cssroot$phases/phase1-foundation-gaps.html"$p1active$>01 foundation</a>
+      <a href="$cssroot$phases/phase2-kubernetes-mastery.html"$p2active$>02 kubernetes</a>
+      <a href="$cssroot$phases/phase3-observability-sre.html"$p3active$>03 observability</a>
+      <a href="$cssroot$phases/phase4-architecture-design.html"$p4active$>04 architecture</a>
+      <a href="$cssroot$phases/phase5-interview-prep.html"$p5active$>05 interview</a>
+    </nav>
+  </div>
+</div>
+
+<div class="page-wrap">
+  <div class="doc-eyebrow">$eyebrow$</div>
+$body$
+  $if(navfoot)$
+  <div class="phase-nav-foot">
+    $if(prevlink)$
+    <a href="$prevlink$"><span class="label">&larr; previous</span>$prevtitle$</a>
+    $endif$
+    $if(nextlink)$
+    <a href="$nextlink$" class="next"><span class="label">next &rarr;</span>$nexttitle$</a>
+    $endif$
+  </div>
+  $endif$
+</div>
+
+<footer class="site-footer">
+  senior cloud engineer study system — generated reference material, not affiliated with any employer
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,266 @@
+/* ============================================================
+   Senior Cloud Engineer Study System — shared stylesheet
+   Design concept: "the stack" — a layered systems aesthetic.
+   Deep slate base, phosphor-green accent (terminal/monitoring
+   heritage), JetBrains Mono for code & structure, source serif
+   for long-form reading comfort.
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&display=swap');
+
+:root {
+  --bg:        #0b0f0e;
+  --bg-raised: #111614;
+  --bg-card:   #141a18;
+  --line:      #232c29;
+  --line-soft: #1a201d;
+  --text:      #e7ece9;
+  --text-dim:  #9aa8a2;
+  --text-faint:#5f6f68;
+  --accent:    #4ee8a0;
+  --accent-dim:#2c8f63;
+  --accent-bg: rgba(78, 232, 160, 0.08);
+  --amber:     #e8b84e;
+  --coral:     #e87a4e;
+
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --serif: 'Source Serif 4', Georgia, serif;
+
+  --radius: 3px;
+  --maxw: 760px;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Faint scanline / grid texture on the body for the "monitoring console" feel */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(78,232,160,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(78,232,160,0.025) 1px, transparent 1px);
+  background-size: 48px 48px;
+  z-index: 0;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+a:focus-visible, button:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+code, pre, kbd, samp {
+  font-family: var(--mono);
+}
+
+pre {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.3rem;
+  overflow-x: auto;
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+code {
+  font-size: 0.86em;
+  background: var(--bg-raised);
+  padding: 0.15em 0.4em;
+  border-radius: 2px;
+  color: var(--accent);
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  color: var(--text);
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--mono);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+h1 { font-size: 1.9rem; line-height: 1.25; }
+h2 { font-size: 1.35rem; margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
+h3 { font-size: 1.1rem; margin-top: 2.2rem; color: var(--accent); }
+h4 { font-size: 0.95rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
+
+p, li { color: var(--text); }
+
+blockquote {
+  border-left: 2px solid var(--accent-dim);
+  margin: 1.5rem 0;
+  padding: 0.2rem 1.2rem;
+  color: var(--text-dim);
+  background: var(--accent-bg);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+blockquote p:first-child strong {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5rem 0;
+  font-size: 0.92rem;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid var(--line);
+}
+
+th {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--accent-dim);
+}
+
+tr:hover td { background: var(--bg-raised); }
+
+hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 2.5rem 0;
+}
+
+::selection { background: var(--accent); color: var(--bg); }
+
+/* ---------- Layout shells ---------- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(11,15,14,0.85);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar-inner {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 0.9rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.topbar-brand {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.topbar-brand .dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+.topbar-nav {
+  display: flex;
+  gap: 1.4rem;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.topbar-nav a { color: var(--text-faint); }
+.topbar-nav a:hover, .topbar-nav a.active { color: var(--accent); text-decoration: none; }
+
+.page-wrap {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 3rem 1.5rem 6rem;
+  position: relative;
+  z-index: 1;
+}
+
+.doc-eyebrow {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.6rem;
+}
+
+.doc-meta {
+  display: flex;
+  gap: 1.2rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  margin: 1rem 0 2.5rem;
+  flex-wrap: wrap;
+}
+
+.doc-meta span { display: flex; align-items: center; gap: 0.4rem; }
+
+.phase-nav-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 4rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+
+.phase-nav-foot a {
+  display: block;
+  color: var(--text-dim);
+  max-width: 45%;
+}
+.phase-nav-foot a:hover { color: var(--accent); }
+.phase-nav-foot .label { display: block; color: var(--text-faint); font-size: 0.72rem; margin-bottom: 0.25rem; }
+.phase-nav-foot .next { text-align: right; margin-left: auto; }
+
+footer.site-footer {
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--text-faint);
+  padding: 2.5rem 1.5rem 3.5rem;
+}
+
+/* responsive */
+@media (max-width: 640px) {
+  .topbar-nav { display: none; }
+  h1 { font-size: 1.5rem; }
+  body { font-size: 16px; }
+}

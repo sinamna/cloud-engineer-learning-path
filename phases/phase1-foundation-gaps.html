@@ -1,0 +1,1229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 1 — Foundation Gaps — Senior Cloud Engineer Study System</title>
+<meta name="description" content="Linux internals, networking, distributed systems, storage">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a href="../index.html" class="topbar-brand"><span class="dot"></span>cloud-engineer-deepdive</a>
+    <nav class="topbar-nav">
+      <a href="../index.html">index</a>
+      <a href="../phases/phase1-foundation-gaps.html" class="active">01 foundation</a>
+      <a href="../phases/phase2-kubernetes-mastery.html">02 kubernetes</a>
+      <a href="../phases/phase3-observability-sre.html">03 observability</a>
+      <a href="../phases/phase4-architecture-design.html">04 architecture</a>
+      <a href="../phases/phase5-interview-prep.html">05 interview</a>
+    </nav>
+  </div>
+</div>
+
+<div class="page-wrap">
+  <div class="doc-eyebrow">01 / 05 — foundation</div>
+<h1 id="phase-1-foundation-gaps">Phase 1 — Foundation Gaps</h1>
+<h2 id="linux-internals-networking-distributed-systems-storage">Linux
+Internals, Networking, Distributed Systems, Storage</h2>
+<blockquote>
+<p>Deep technical reference for senior cloud engineers. No fluff, no
+resume anchoring — just the knowledge itself at the depth that matters
+in both production and interviews.</p>
+</blockquote>
+<hr />
+<h2 id="learning-objectives">Learning objectives</h2>
+<ul>
+<li>Explain precisely what a container is in kernel terms</li>
+<li>Trace a packet from a process through the Linux network stack</li>
+<li>Reason about distributed system behaviour under partition</li>
+<li>Choose storage architectures with confidence, knowing the underlying
+tradeoffs</li>
+</ul>
+<p><strong>Estimated study time:</strong> 3–4 days</p>
+<hr />
+<h2 id="linux-internals">1. Linux internals</h2>
+<h3 id="kernel-architecture-and-the-syscall-boundary">1.1 Kernel
+architecture and the syscall boundary</h3>
+<p>The Linux kernel is a monolithic kernel — all core services (process
+scheduling, memory management, VFS, networking, device drivers) run in
+the same address space with full hardware privileges (ring 0 on x86).
+User processes run in ring 3 with no direct hardware access.</p>
+<p><strong>The boundary is enforced in hardware.</strong> When a
+user-space process needs a privileged operation, it issues a system
+call. On x86-64, this means:</p>
+<pre><code>1. Arguments go into registers (rdi, rsi, rdx, r10, r8, r9)
+2. Syscall number goes into rax
+3. The `syscall` instruction triggers a mode switch
+4. CPU saves registers, switches to kernel stack, jumps to syscall handler
+5. Kernel executes the operation
+6. Returns to user space via `sysret`</code></pre>
+<p>This mode switch costs ~100–300ns. It’s cheap individually but adds
+up — a tight loop calling <code>read()</code> on a socket is slower than
+one using <code>io_uring</code> because the former mode-switches per
+call.</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Count syscalls by type for a process</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ex">strace</span> <span class="at">-c</span> <span class="at">-p</span> <span class="op">&lt;</span>PID<span class="op">&gt;</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Trace all syscalls with arguments</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="ex">strace</span> <span class="at">-e</span> trace=all <span class="at">-p</span> <span class="op">&lt;</span>PID<span class="op">&gt;</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="co"># Filter to just network syscalls</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="ex">strace</span> <span class="at">-e</span> trace=network nginx <span class="at">-g</span> <span class="st">&quot;daemon off;&quot;</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="co"># Watch syscalls system-wide (useful for container debugging)</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a><span class="ex">bpftrace</span> <span class="at">-e</span> <span class="st">&#39;tracepoint:raw_syscalls:sys_enter { @[comm, args-&gt;id] = count(); }&#39;</span></span></code></pre></div>
+<p><strong>io_uring</strong> (Linux 5.1+) addresses the syscall overhead
+problem by letting processes submit and drain I/O operations through
+shared ring buffers in memory, requiring zero syscalls for the fast
+path. This is why databases and high-performance runtimes (Tokio in
+Rust, some JVM projects) are migrating to it.</p>
+<h3 id="process-model-fork-exec-clone">1.2 Process model — fork, exec,
+clone</h3>
+<p>Every running entity in Linux is a <code>task_struct</code>. Threads
+and processes are the same object, differentiated only by which
+resources they share.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co">// fork() — creates new process, COW copy of parent</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>pid_t child <span class="op">=</span> fork<span class="op">();</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="co">// exec() — replaces current process image</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>execve<span class="op">(</span><span class="st">&quot;/usr/bin/nginx&quot;</span><span class="op">,</span> argv<span class="op">,</span> envp<span class="op">);</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="co">// clone() — fine-grained control over what&#39;s shared</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="co">// This is what container runtimes actually call</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>clone<span class="op">(</span>fn<span class="op">,</span> stack<span class="op">,</span> CLONE_NEWPID <span class="op">|</span> CLONE_NEWNET <span class="op">|</span> CLONE_NEWNS <span class="op">|</span> CLONE_NEWUTS<span class="op">,</span> arg<span class="op">);</span></span></code></pre></div>
+<p><strong>Copy-on-write (COW):</strong> After <code>fork()</code>, the
+child shares the parent’s memory pages. The kernel marks them read-only.
+The first write by either process triggers a page fault; the kernel
+copies the page before allowing the write. This is why
+<code>fork()</code> is fast even for large processes — no actual copying
+until write time.</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co"># See COW in action: watch RSS vs VSZ</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="fu">ps</span> <span class="at">-o</span> pid,vsz,rss,comm <span class="at">-p</span> <span class="op">&lt;</span>PID<span class="op">&gt;</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="co"># VSZ (virtual size) = same as parent immediately after fork</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="co"># RSS (resident set size) = grows only as pages are written</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Process tree</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="fu">pstree</span> <span class="at">-p</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Detailed task info</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /proc/<span class="op">&lt;</span>PID<span class="op">&gt;</span>/status</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /proc/<span class="op">&lt;</span>PID<span class="op">&gt;</span>/maps      <span class="co"># Virtual memory layout</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /proc/<span class="op">&lt;</span>PID<span class="op">&gt;</span>/smaps     <span class="co"># Per-mapping memory stats (shows COW shared/private)</span></span></code></pre></div>
+<p><strong>Zombie processes:</strong> A process that has called
+<code>exit()</code> but whose parent has not called <code>wait()</code>.
+The process is dead (no CPU, no memory except a PID entry), but occupies
+a slot in the process table. If a parent exits before
+<code>wait()</code>-ing, the children are reparented to PID 1
+(init/systemd in the host; your container entrypoint in a container).
+This is why container entrypoints that don’t properly
+<code>wait()</code> for children accumulate zombie processes.</p>
+<h3 id="namespaces-isolation-primitives">1.3 Namespaces — isolation
+primitives</h3>
+<p>Namespaces wrap specific global kernel resources and present each
+process with the illusion of having its own private instance.</p>
+<table>
+<colgroup>
+<col style="width: 31%" />
+<col style="width: 42%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Namespace</th>
+<th><code>clone()</code> flag</th>
+<th>Isolates</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>pid</code></td>
+<td><code>CLONE_NEWPID</code></td>
+<td>Process ID number space</td>
+</tr>
+<tr class="even">
+<td><code>net</code></td>
+<td><code>CLONE_NEWNET</code></td>
+<td>Network stack (interfaces, routes, netfilter, sockets)</td>
+</tr>
+<tr class="odd">
+<td><code>mnt</code></td>
+<td><code>CLONE_NEWNS</code></td>
+<td>Mount point tree</td>
+</tr>
+<tr class="even">
+<td><code>uts</code></td>
+<td><code>CLONE_NEWUTS</code></td>
+<td>Hostname and NIS domain name</td>
+</tr>
+<tr class="odd">
+<td><code>ipc</code></td>
+<td><code>CLONE_NEWIPC</code></td>
+<td>System V IPC, POSIX message queues</td>
+</tr>
+<tr class="even">
+<td><code>user</code></td>
+<td><code>CLONE_NEWUSER</code></td>
+<td>UID/GID mappings</td>
+</tr>
+<tr class="odd">
+<td><code>cgroup</code></td>
+<td><code>CLONE_NEWCGROUP</code></td>
+<td>cgroup root directory view</td>
+</tr>
+<tr class="even">
+<td><code>time</code></td>
+<td><code>CLONE_NEWTIME</code></td>
+<td>Clock offsets (Linux 5.6+)</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>pid</code> namespace mechanics:</strong></p>
+<p>The first process in a new PID namespace gets PID 1. It has all the
+responsibilities of init — it must <code>wait()</code> for children, it
+receives signals delivered to PID 1, and if it exits, all processes in
+the namespace are killed with SIGKILL.</p>
+<p>On the host, these processes have real PIDs from the host’s PID
+space. The kernel maintains a two-level mapping.</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Find a container&#39;s init PID on the host</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="ex">docker</span> inspect <span class="op">&lt;</span>container<span class="op">&gt;</span> --format <span class="st">&#39;{{ .State.Pid }}&#39;</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Enter a container&#39;s namespaces without Docker</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="ex">nsenter</span> <span class="at">--target</span> <span class="op">&lt;</span>host-PID<span class="op">&gt;</span> --mount <span class="at">--uts</span> <span class="at">--ipc</span> <span class="at">--net</span> <span class="at">--pid</span> <span class="at">--</span> /bin/bash</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a><span class="co"># List all namespaces on the system</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a><span class="ex">lsns</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a><span class="co"># See which namespaces a process belongs to</span></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> <span class="at">-la</span> /proc/<span class="op">&lt;</span>PID<span class="op">&gt;</span>/ns/</span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a><span class="co"># Each symlink target is namespace type:[inode]</span></span>
+<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a><span class="co"># Processes sharing the same inode are in the same namespace</span></span></code></pre></div>
+<p><strong><code>net</code> namespace mechanics:</strong></p>
+<p>Each network namespace has its own: - Network interfaces (including
+<code>lo</code>) - IP routing table - Netfilter (iptables/nftables)
+rules - Connection tracking table - Socket table - Ephemeral port
+range</p>
+<p>Two processes in different net namespaces can each bind
+<code>0.0.0.0:80</code> without conflict because they are binding to
+different socket tables in different kernel network stacks.</p>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Create and use a network namespace manually</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> netns add test-ns</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> netns exec test-ns bash</span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Inside: only lo interface, isolated routing table</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> addr</span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> route</span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Connect two namespaces with a veth pair</span></span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> link add veth0 type veth peer name veth1</span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> link set veth1 netns test-ns</span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> addr add 192.168.100.1/24 dev veth0</span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> netns exec test-ns ip addr add 192.168.100.2/24 dev veth1</span>
+<span id="cb6-14"><a href="#cb6-14" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> link set veth0 up</span>
+<span id="cb6-15"><a href="#cb6-15" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> netns exec test-ns ip link set veth1 up</span>
+<span id="cb6-16"><a href="#cb6-16" aria-hidden="true" tabindex="-1"></a><span class="fu">ping</span> 192.168.100.2  <span class="co"># Reachable across namespace boundary via veth</span></span></code></pre></div>
+<p><strong><code>user</code> namespace — rootless
+containers:</strong></p>
+<p>User namespaces map UIDs inside the namespace to different UIDs
+outside. UID 0 (root) inside can be mapped to UID 65534 (nobody)
+outside. This is the basis of rootless containers — your “root” process
+inside the container has no privileges on the host.</p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co"># See UID mapping for a process</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /proc/<span class="op">&lt;</span>PID<span class="op">&gt;</span>/uid_map</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Format: inside-uid  outside-uid  count</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 0         1000        1  → UID 0 inside = UID 1000 outside</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Run a container as a non-root user on the host</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a><span class="ex">docker</span> run <span class="at">--user</span> 1000:1000 alpine id</span></code></pre></div>
+<h3 id="cgroups-resource-containment">1.4 cgroups — resource
+containment</h3>
+<p>Namespaces control what you can see; cgroups control how much you can
+use.</p>
+<p><strong>cgroups v2 (unified hierarchy)</strong> — default on modern
+Linux (Ubuntu 22.04+, RHEL 9):</p>
+<pre><code>/sys/fs/cgroup/
+├── cgroup.controllers          # Available controllers
+├── cgroup.subtree_control      # Enabled controllers for children
+├── memory.max                  # Memory hard limit
+├── cpu.max                     # CPU quota/period
+├── io.max                      # I/O BPS/IOPS limits
+└── system.slice/
+    └── docker-&lt;id&gt;.scope/
+        ├── cgroup.procs        # PIDs in this cgroup
+        ├── memory.current      # Current memory usage
+        ├── memory.max          # Memory limit
+        ├── cpu.stat            # CPU usage statistics
+        └── cpu.max             # &quot;quota period&quot; e.g. &quot;50000 100000&quot;</code></pre>
+<p><strong>CPU throttling in depth:</strong></p>
+<p><code>cpu.max = "50000 100000"</code> means: within any 100ms period,
+this cgroup may run for at most 50ms. If all processes in the cgroup
+exhaust their 50ms quota before the period ends, they are frozen until
+the next period. This is <strong>throttling</strong> — not killing, not
+deprioritising, but literally stopping execution.</p>
+<p>This creates a subtle latency pattern: a service might be throttled
+at 3:00:00.000 for 50ms, resume at 3:00:00.050, get throttled again at
+3:00:00.100, etc. From the outside this looks like periodic latency
+spikes at ~100ms intervals even when the node’s overall CPU utilisation
+is low.</p>
+<div class="sourceCode" id="cb9"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Check CPU throttle metrics</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /sys/fs/cgroup/system.slice/docker-<span class="op">&lt;</span>id<span class="op">&gt;</span>.scope/cpu.stat</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="co"># nr_periods         = total scheduling periods elapsed</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="co"># nr_throttled       = periods where cgroup was throttled</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a><span class="co"># throttled_usec     = total microseconds throttled</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a><span class="co"># In Kubernetes, via Prometheus:</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a><span class="ex">rate</span><span class="er">(</span><span class="va">container_cpu_cfs_throttled_periods_total</span><span class="op">[</span><span class="dv">5</span>m<span class="op">]</span><span class="kw">)</span></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>  <span class="ex">/</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a><span class="ex">rate</span><span class="er">(</span><span class="va">container_cpu_cfs_periods_total</span><span class="op">[</span><span class="dv">5</span>m<span class="op">]</span><span class="kw">)</span></span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a><span class="co"># &gt; 0.25 (25%) is concerning; &gt; 0.5 is serious</span></span></code></pre></div>
+<p><strong>Memory: OOMKiller mechanics:</strong></p>
+<p>When a cgroup hits its memory limit, the kernel invokes the OOM
+killer. It scores all processes in the cgroup using this formula:</p>
+<pre><code>oom_score = (process_memory_usage / total_memory) * 1000
+oom_score += oom_score_adj  # tunable per-process, range -1000 to 1000</code></pre>
+<p>The process with the highest <code>oom_score</code> is killed.
+Kubernetes sets <code>oom_score_adj</code> based on QoS class: -
+BestEffort: <code>1000</code> (killed first) - Burstable:
+<code>min(max(2, 1000 - (1000 * memoryRequestBytes) / machineMemoryCapacityBytes), 999)</code>
+- Guaranteed: <code>-997</code> (almost never killed)</p>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /proc/<span class="op">&lt;</span>PID<span class="op">&gt;</span>/oom_score      <span class="co"># Current score (0-1000)</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /proc/<span class="op">&lt;</span>PID<span class="op">&gt;</span>/oom_score_adj  <span class="co"># Adjustment</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a><span class="co"># OOM events in kernel log</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a><span class="fu">dmesg</span> <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-E</span> <span class="st">&quot;oom_kill|Out of memory&quot;</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a><span class="ex">journalctl</span> <span class="at">-k</span> <span class="kw">|</span> <span class="fu">grep</span> <span class="st">&quot;Killed process&quot;</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Per-cgroup OOM events (v2)</span></span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /sys/fs/cgroup/.../memory.events</span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a><span class="co"># oom          = number of OOM events</span></span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a><span class="co"># oom_kill     = number of processes killed</span></span></code></pre></div>
+<p><strong><code>blkio</code> / <code>io</code> controller:</strong></p>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="co"># v2: set max read BPS for a block device</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="st">&quot;8:0 rbps=10485760&quot;</span> <span class="op">&gt;</span> /sys/fs/cgroup/.../io.max</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="co"># 8:0 = major:minor of /dev/sda, rbps = 10MB/s</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Current I/O stats</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /sys/fs/cgroup/.../io.stat</span></code></pre></div>
+<blockquote>
+<p><strong>Key mental model:</strong> A container is:
+<code>clone()</code> with namespace flags (what you can see) + a cgroup
+(how much you can use) + a union filesystem (overlayfs) providing the
+root filesystem. There is no “container daemon” running inside. The
+container’s init process is a plain Linux process, visible from the host
+with a real PID.</p>
+</blockquote>
+<hr />
+<h2 id="networking-deep-dive">2. Networking deep dive</h2>
+<h3 id="tcpip-internals">2.1 TCP/IP internals</h3>
+<p><strong>TCP state machine:</strong></p>
+<pre><code>CLOSED → LISTEN (server calls listen())
+LISTEN → SYN_RECEIVED (SYN arrives, server sends SYN-ACK)
+SYN_RECEIVED → ESTABLISHED (ACK arrives)
+
+CLOSED → SYN_SENT (client calls connect())
+SYN_SENT → ESTABLISHED (SYN-ACK arrives, client sends ACK)
+
+ESTABLISHED → FIN_WAIT_1 (active close: FIN sent)
+FIN_WAIT_1 → FIN_WAIT_2 (ACK received)
+FIN_WAIT_2 → TIME_WAIT (FIN from peer received, ACK sent)
+TIME_WAIT → CLOSED (2×MSL timer expires, default 60s)
+
+ESTABLISHED → CLOSE_WAIT (passive close: FIN received, ACK sent)
+CLOSE_WAIT → LAST_ACK (application closes, FIN sent)
+LAST_ACK → CLOSED (ACK received)</code></pre>
+<p><strong>TIME_WAIT:</strong> Exists to handle late-arriving packets
+from old connections. The 2×MSL (Maximum Segment Lifetime) wait ensures
+stale packets from a previous connection won’t corrupt a new connection
+reusing the same 4-tuple (src_ip, src_port, dst_ip, dst_port).</p>
+<p>At high connection rates (microservices making many short
+connections), TIME_WAIT can exhaust the ephemeral port range (default
+32768–60999 = 28,231 ports).</p>
+<div class="sourceCode" id="cb14"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Current TIME_WAIT count</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="ex">ss</span> <span class="at">-ant</span> state time-wait <span class="kw">|</span> <span class="fu">wc</span> <span class="at">-l</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Tune TIME_WAIT behaviour</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a><span class="ex">sysctl</span> net.ipv4.tcp_fin_timeout          <span class="co"># Default: 60 (seconds)</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a><span class="ex">sysctl</span> net.ipv4.tcp_tw_reuse            <span class="co"># Allow reuse for outbound connections (safer)</span></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a><span class="ex">sysctl</span> net.ipv4.ip_local_port_range     <span class="co"># Expand ephemeral port range</span></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Full socket stats</span></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a><span class="ex">ss</span> <span class="at">-s</span></span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a><span class="co"># Shows counts per state: estab, closed, time-wait, etc.</span></span></code></pre></div>
+<p><strong>TCP congestion control:</strong></p>
+<p>TCP constantly estimates available bandwidth and adjusts its sending
+rate. The algorithm determines how aggressively it probes and backs
+off.</p>
+<table>
+<colgroup>
+<col style="width: 36%" />
+<col style="width: 33%" />
+<col style="width: 30%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Algorithm</th>
+<th>Strategy</th>
+<th>Best for</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Cubic (default pre-5.x)</td>
+<td>Loss-based, cubic growth function</td>
+<td>Datacenter, stable networks</td>
+</tr>
+<tr class="even">
+<td>BBR</td>
+<td>Model-based (estimates BDP), doesn’t rely on loss</td>
+<td>WAN, lossy networks</td>
+</tr>
+<tr class="odd">
+<td>QUIC</td>
+<td>UDP-based, solves head-of-line blocking</td>
+<td>HTTP/3, variable networks</td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb15"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="ex">sysctl</span> net.ipv4.tcp_congestion_control      <span class="co"># Current algorithm</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="ex">sysctl</span> net.ipv4.tcp_available_congestion_control  <span class="co"># Available</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a><span class="ex">sysctl</span> <span class="at">-w</span> net.ipv4.tcp_congestion_control=bbr</span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Measure connection RTT</span></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a><span class="ex">ss</span> <span class="at">-tnp</span> <span class="kw">|</span> <span class="fu">grep</span> ESTAB  <span class="co"># Shows RTT per connection in extended output</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a><span class="ex">ss</span> <span class="at">-tnpi</span>             <span class="co"># Even more detail including congestion state</span></span></code></pre></div>
+<p><strong>Kernel network receive path (simplified):</strong></p>
+<pre><code>NIC receives packet
+  → DMA to ring buffer in RAM
+  → Raise hardware interrupt
+  → Kernel IRQ handler runs (maps to a CPU)
+  → ksoftirqd processes the ring buffer (NAPI polling)
+  → skb (socket buffer) allocated
+  → Passes through netfilter hooks (PREROUTING)
+  → Routing decision
+  → Passes through netfilter hooks (INPUT for local delivery)
+  → Delivered to socket receive queue
+  → Application wake-up (epoll/select triggers)
+  → Application calls recv()</code></pre>
+<div class="sourceCode" id="cb17"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="co"># See receive queue depth (if growing, you&#39;re dropping packets)</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /proc/net/softnet_stat</span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Columns: total dropped squeezed ... (per CPU)</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Check for packet drops at NIC level</span></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a><span class="ex">ethtool</span> <span class="at">-S</span> <span class="op">&lt;</span>interface<span class="op">&gt;</span> <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-i</span> drop</span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> <span class="at">-s</span> link show <span class="op">&lt;</span>interface<span class="op">&gt;</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a><span class="co"># IRQ affinity (which CPU handles which NIC queue)</span></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /proc/interrupts <span class="kw">|</span> <span class="fu">grep</span> eth0</span></code></pre></div>
+<h3 id="ebpf-extended-berkeley-packet-filter">2.2 eBPF — extended
+Berkeley Packet Filter</h3>
+<p>eBPF is a virtual machine embedded in the Linux kernel that lets you
+run sandboxed programs at kernel hook points without modifying kernel
+source or loading modules.</p>
+<p><strong>The eBPF execution model:</strong></p>
+<pre><code>C source → Clang (LLVM backend) → eBPF bytecode
+                                        ↓
+                               Kernel verifier
+                               (safety checks: no loops that don&#39;t terminate,
+                                no bad memory access, no unbounded execution)
+                                        ↓
+                               JIT compiler → native CPU instructions
+                                        ↓
+                               Attached to hook point → executes in-kernel</code></pre>
+<p><strong>Hook points:</strong></p>
+<table>
+<colgroup>
+<col style="width: 26%" />
+<col style="width: 34%" />
+<col style="width: 39%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Hook</th>
+<th>Timing</th>
+<th>Use case</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>XDP (eXpress Data Path)</td>
+<td>Before sk_buff allocation (earliest possible)</td>
+<td>DDoS mitigation, load balancing</td>
+</tr>
+<tr class="even">
+<td>TC ingress/egress</td>
+<td>After sk_buff, before/after routing</td>
+<td>Packet modification, observability</td>
+</tr>
+<tr class="odd">
+<td>kprobe/kretprobe</td>
+<td>On kernel function entry/return</td>
+<td>Tracing any kernel function</td>
+</tr>
+<tr class="even">
+<td>uprobe/uretprobe</td>
+<td>On user-space function entry/return</td>
+<td>Tracing application code</td>
+</tr>
+<tr class="odd">
+<td>tracepoints</td>
+<td>Stable kernel instrumentation points</td>
+<td>Preferred over kprobes</td>
+</tr>
+<tr class="even">
+<td>LSM hooks</td>
+<td>Linux Security Module hooks</td>
+<td>Security policy enforcement</td>
+</tr>
+<tr class="odd">
+<td>cgroup</td>
+<td>Per-cgroup network hooks</td>
+<td>Per-container policy</td>
+</tr>
+</tbody>
+</table>
+<p><strong>eBPF maps — communication between kernel and user
+space:</strong></p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Define a hash map in eBPF program</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a>    __uint<span class="op">(</span>type<span class="op">,</span> BPF_MAP_TYPE_HASH<span class="op">);</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>    __type<span class="op">(</span>key<span class="op">,</span> u32<span class="op">);</span>           <span class="co">// key = PID</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>    __type<span class="op">(</span>value<span class="op">,</span> u64<span class="op">);</span>         <span class="co">// value = byte count</span></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a>    __uint<span class="op">(</span>max_entries<span class="op">,</span> <span class="dv">1024</span><span class="op">);</span></span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> bytes_by_pid SEC<span class="op">(</span><span class="st">&quot;.maps&quot;</span><span class="op">);</span></span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a><span class="co">// In eBPF program: increment counter</span></span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a>u32 pid <span class="op">=</span> bpf_get_current_pid_tgid<span class="op">()</span> <span class="op">&gt;&gt;</span> <span class="dv">32</span><span class="op">;</span></span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a>u64 <span class="op">*</span>count <span class="op">=</span> bpf_map_lookup_elem<span class="op">(&amp;</span>bytes_by_pid<span class="op">,</span> <span class="op">&amp;</span>pid<span class="op">);</span></span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="op">(</span>count<span class="op">)</span> <span class="op">(*</span>count<span class="op">)++;</span></span></code></pre></div>
+<div class="sourceCode" id="cb20"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="co"># List loaded eBPF programs</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a><span class="ex">bpftool</span> prog list</span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Show eBPF maps</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a><span class="ex">bpftool</span> map list</span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a><span class="ex">bpftool</span> map dump id <span class="op">&lt;</span>id<span class="op">&gt;</span></span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Real-time observability with bpftrace</span></span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Trace all execve() calls system-wide</span></span>
+<span id="cb20-10"><a href="#cb20-10" aria-hidden="true" tabindex="-1"></a><span class="ex">bpftrace</span> <span class="at">-e</span> <span class="st">&#39;tracepoint:syscalls:sys_enter_execve { printf(&quot;%d %s %s\n&quot;, pid, comm, str(args-&gt;filename)); }&#39;</span></span>
+<span id="cb20-11"><a href="#cb20-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-12"><a href="#cb20-12" aria-hidden="true" tabindex="-1"></a><span class="co"># Latency histogram for read() syscalls</span></span>
+<span id="cb20-13"><a href="#cb20-13" aria-hidden="true" tabindex="-1"></a><span class="ex">bpftrace</span> <span class="at">-e</span> <span class="st">&#39;</span></span>
+<span id="cb20-14"><a href="#cb20-14" aria-hidden="true" tabindex="-1"></a><span class="st">tracepoint:syscalls:sys_enter_read { @start[tid] = nsecs; }</span></span>
+<span id="cb20-15"><a href="#cb20-15" aria-hidden="true" tabindex="-1"></a><span class="st">tracepoint:syscalls:sys_exit_read  /@start[tid]/ {</span></span>
+<span id="cb20-16"><a href="#cb20-16" aria-hidden="true" tabindex="-1"></a><span class="st">  @lat = hist(nsecs - @start[tid]);</span></span>
+<span id="cb20-17"><a href="#cb20-17" aria-hidden="true" tabindex="-1"></a><span class="st">  delete(@start[tid]);</span></span>
+<span id="cb20-18"><a href="#cb20-18" aria-hidden="true" tabindex="-1"></a><span class="st">}&#39;</span></span>
+<span id="cb20-19"><a href="#cb20-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-20"><a href="#cb20-20" aria-hidden="true" tabindex="-1"></a><span class="co"># TCP connection tracing</span></span>
+<span id="cb20-21"><a href="#cb20-21" aria-hidden="true" tabindex="-1"></a><span class="ex">bpftrace</span> <span class="at">-e</span> <span class="st">&#39;kprobe:tcp_connect { printf(&quot;connect: %s pid=%d\n&quot;, comm, pid); }&#39;</span></span>
+<span id="cb20-22"><a href="#cb20-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-23"><a href="#cb20-23" aria-hidden="true" tabindex="-1"></a><span class="co"># Count syscalls by process</span></span>
+<span id="cb20-24"><a href="#cb20-24" aria-hidden="true" tabindex="-1"></a><span class="ex">bpftrace</span> <span class="at">-e</span> <span class="st">&#39;tracepoint:raw_syscalls:sys_enter { @[comm] = count(); } interval:s:5 { print(@); clear(@); }&#39;</span></span></code></pre></div>
+<p><strong>Why Cilium replaced kube-proxy with eBPF:</strong></p>
+<p>iptables rules are evaluated sequentially. With 500 Services in a
+Kubernetes cluster, you might have 15,000 iptables rules. Every packet
+must traverse the relevant chain, which is O(n) in rule count.</p>
+<p>eBPF uses hash maps for Service lookup — O(1) regardless of the
+number of Services. At scale (thousands of services), eBPF dataplane
+provides 5–10× lower latency for service forwarding compared to
+iptables.</p>
+<div class="sourceCode" id="cb21"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Measure iptables rule count vs service count</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> get svc <span class="at">--all-namespaces</span> <span class="kw">|</span> <span class="fu">wc</span> <span class="at">-l</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a><span class="ex">iptables</span> <span class="at">-t</span> nat <span class="at">-L</span> <span class="kw">|</span> <span class="fu">wc</span> <span class="at">-l</span>   <span class="co"># Should be roughly 20× service count with kube-proxy</span></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a><span class="co"># With Cilium eBPF:</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a><span class="ex">cilium</span> service list <span class="kw">|</span> <span class="fu">wc</span> <span class="at">-l</span></span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a><span class="ex">iptables</span> <span class="at">-t</span> nat <span class="at">-L</span> <span class="kw">|</span> <span class="fu">wc</span> <span class="at">-l</span>  <span class="co"># Near zero for pod-to-service traffic</span></span></code></pre></div>
+<h3 id="cni-plugin-architecture">2.3 CNI plugin architecture</h3>
+<p>The Container Network Interface (CNI) is a spec defining how
+container runtimes call network plugins. It has exactly two operations:
+ADD and DEL.</p>
+<p><strong>CNI ADD — what happens when a pod starts:</strong></p>
+<pre><code>kubelet creates pod sandbox (pause container with shared net namespace)
+    ↓
+kubelet calls CRI (containerd) to set up networking
+    ↓
+containerd executes CNI binary: /opt/cni/bin/&lt;plugin&gt;
+    with environment:
+      CNI_COMMAND=ADD
+      CNI_CONTAINERID=&lt;id&gt;
+      CNI_NETNS=/proc/&lt;PID&gt;/ns/net
+      CNI_IFNAME=eth0
+    and config via stdin (from /etc/cni/net.d/)
+    ↓
+CNI plugin:
+  1. Allocates IP from IPAM backend (host-local, DHCP, Calico IPAM, etc.)
+  2. Creates veth pair: one end in pod netns (eth0), one end on host
+  3. Configures IP/routes on both ends
+  4. May configure additional host routes for pod reachability
+  5. Returns JSON with assigned IP to containerd
+    ↓
+kubelet reports pod IP to apiserver</code></pre>
+<div class="sourceCode" id="cb23"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="co"># CNI configuration files</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> /etc/cni/net.d/</span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /etc/cni/net.d/10-calico.conflist</span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a><span class="co"># CNI binaries</span></span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> /opt/cni/bin/</span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Debug: what IPs are allocated?</span></span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /var/lib/cni/networks/cbr0/<span class="pp">*</span>  <span class="co"># For host-local IPAM</span></span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-11"><a href="#cb23-11" aria-hidden="true" tabindex="-1"></a><span class="co"># Manually invoke CNI ADD for debugging</span></span>
+<span id="cb23-12"><a href="#cb23-12" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">CNI_COMMAND</span><span class="op">=</span>ADD <span class="va">CNI_CONTAINERID</span><span class="op">=</span>testcid <span class="va">CNI_NETNS</span><span class="op">=</span>/var/run/netns/test <span class="dt">\</span></span>
+<span id="cb23-13"><a href="#cb23-13" aria-hidden="true" tabindex="-1"></a>       <span class="va">CNI_IFNAME</span><span class="op">=</span>eth0 <span class="va">CNI_PATH</span><span class="op">=</span>/opt/cni/bin</span>
+<span id="cb23-14"><a href="#cb23-14" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="st">&#39;{&quot;cniVersion&quot;:&quot;0.4.0&quot;,&quot;name&quot;:&quot;test&quot;,&quot;type&quot;:&quot;bridge&quot;,&quot;bridge&quot;:&quot;cni0&quot;,&quot;ipam&quot;:{&quot;type&quot;:&quot;host-local&quot;,&quot;subnet&quot;:&quot;10.244.0.0/24&quot;}}&#39;</span> <span class="dt">\</span></span>
+<span id="cb23-15"><a href="#cb23-15" aria-hidden="true" tabindex="-1"></a>  <span class="kw">|</span> <span class="ex">/opt/cni/bin/bridge</span></span>
+<span id="cb23-16"><a href="#cb23-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-17"><a href="#cb23-17" aria-hidden="true" tabindex="-1"></a><span class="co"># Watch CNI calls in kubelet log</span></span>
+<span id="cb23-18"><a href="#cb23-18" aria-hidden="true" tabindex="-1"></a><span class="ex">journalctl</span> <span class="at">-u</span> kubelet <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-i</span> cni</span></code></pre></div>
+<p><strong>Common CNI plugin comparison:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>CNI</th>
+<th>Dataplane</th>
+<th>Overlay</th>
+<th>NetworkPolicy</th>
+<th>BGP</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Flannel</td>
+<td>iptables/VXLAN</td>
+<td>VXLAN/host-gw</td>
+<td>No (needs separate)</td>
+<td>No</td>
+</tr>
+<tr class="even">
+<td>Calico</td>
+<td>iptables/eBPF</td>
+<td>VXLAN/IPIP/BGP</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr class="odd">
+<td>Cilium</td>
+<td>eBPF</td>
+<td>VXLAN/Geneve/BGP</td>
+<td>Yes (L7 too)</td>
+<td>Yes</td>
+</tr>
+<tr class="even">
+<td>Weave</td>
+<td>iptables</td>
+<td>VXLAN</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="distributed-systems-theory">3. Distributed systems theory</h2>
+<h3 id="cap-theorem-precise-understanding">3.1 CAP theorem — precise
+understanding</h3>
+<p>CAP theorem (Brewer, 2000; formalised by Gilbert &amp; Lynch, 2002)
+states: a distributed system cannot simultaneously guarantee all three
+of:</p>
+<ul>
+<li><strong>Consistency (C):</strong> Every read returns the most recent
+write or an error</li>
+<li><strong>Availability (A):</strong> Every non-failing node returns a
+response (not an error) for every request</li>
+<li><strong>Partition tolerance (P):</strong> The system continues
+operating when network partitions occur</li>
+</ul>
+<p><strong>The often-misunderstood corollary:</strong> Network
+partitions are not optional. They will happen. Therefore you must
+tolerate P. The real choice is: <strong>during a partition, do you
+sacrifice C or A?</strong></p>
+<ul>
+<li><strong>CP systems:</strong> During a partition, reject requests
+(return errors) rather than serve potentially stale data</li>
+<li><strong>AP systems:</strong> During a partition, serve the data you
+have even if it might be stale</li>
+</ul>
+<p><strong>Practical classification:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>System</th>
+<th>Partition choice</th>
+<th>Reasoning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>etcd</td>
+<td>CP</td>
+<td>Minority partition stops accepting writes</td>
+</tr>
+<tr class="even">
+<td>ZooKeeper</td>
+<td>CP</td>
+<td>Quorum required for all operations</td>
+</tr>
+<tr class="odd">
+<td>Cassandra</td>
+<td>AP (tunable)</td>
+<td>Quorum level configurable per-operation</td>
+</tr>
+<tr class="even">
+<td>DynamoDB</td>
+<td>AP (default)</td>
+<td>Eventually consistent by default</td>
+</tr>
+<tr class="odd">
+<td>NATS JetStream</td>
+<td>CP</td>
+<td>Raft-based leader election</td>
+</tr>
+<tr class="even">
+<td>Ceph RADOS</td>
+<td>CP</td>
+<td>PG must have quorum of OSDs</td>
+</tr>
+<tr class="odd">
+<td>Consul</td>
+<td>CP</td>
+<td>Raft-based, quorum required</td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb24"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Observe CP behaviour in etcd during partition</span></span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a><span class="co"># 3-node cluster, partition one node:</span></span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a><span class="ex">iptables</span> <span class="at">-A</span> INPUT <span class="at">-s</span> <span class="op">&lt;</span>etcd-node-2-ip<span class="op">&gt;</span> -j DROP</span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a><span class="ex">iptables</span> <span class="at">-A</span> OUTPUT <span class="at">-d</span> <span class="op">&lt;</span>etcd-node-2-ip<span class="op">&gt;</span> -j DROP</span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Cluster still has 2/3 quorum — all operations continue</span></span>
+<span id="cb24-7"><a href="#cb24-7" aria-hidden="true" tabindex="-1"></a><span class="ex">etcdctl</span> put foo bar  <span class="co"># Succeeds</span></span>
+<span id="cb24-8"><a href="#cb24-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-9"><a href="#cb24-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Partition second node:</span></span>
+<span id="cb24-10"><a href="#cb24-10" aria-hidden="true" tabindex="-1"></a><span class="ex">iptables</span> <span class="at">-A</span> INPUT <span class="at">-s</span> <span class="op">&lt;</span>etcd-node-3-ip<span class="op">&gt;</span> -j DROP</span>
+<span id="cb24-11"><a href="#cb24-11" aria-hidden="true" tabindex="-1"></a><span class="ex">iptables</span> <span class="at">-A</span> OUTPUT <span class="at">-d</span> <span class="op">&lt;</span>etcd-node-3-ip<span class="op">&gt;</span> -j DROP</span>
+<span id="cb24-12"><a href="#cb24-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-13"><a href="#cb24-13" aria-hidden="true" tabindex="-1"></a><span class="co"># Now 1/3 — quorum lost, CP kicks in</span></span>
+<span id="cb24-14"><a href="#cb24-14" aria-hidden="true" tabindex="-1"></a><span class="ex">etcdctl</span> put foo bar  <span class="co"># Fails: &quot;etcdserver: request timed out&quot;</span></span>
+<span id="cb24-15"><a href="#cb24-15" aria-hidden="true" tabindex="-1"></a><span class="ex">etcdctl</span> get foo      <span class="co"># Fails: no reads either (strict CP)</span></span>
+<span id="cb24-16"><a href="#cb24-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-17"><a href="#cb24-17" aria-hidden="true" tabindex="-1"></a><span class="co"># Restore</span></span>
+<span id="cb24-18"><a href="#cb24-18" aria-hidden="true" tabindex="-1"></a><span class="ex">iptables</span> <span class="at">-F</span></span></code></pre></div>
+<h3 id="consistency-models-the-full-spectrum">3.2 Consistency models —
+the full spectrum</h3>
+<p>CAP’s “C” is actually just one point on a spectrum. Understanding the
+full spectrum lets you reason about system behaviour.</p>
+<pre><code>Linearizability (strongest)
+    Every operation appears to take effect instantaneously at some point
+    between its invocation and completion. All observers see the same order.
+    etcd, Zookeeper, single-node Redis
+
+Sequential consistency
+    All operations appear in some sequential order consistent with
+    the order seen by each individual process.
+    Not linearizable: two clients may see operations in different order.
+
+Causal consistency
+    Operations that are causally related appear in the same order
+    everywhere. Concurrent operations may be reordered.
+    MongoDB sessions, some distributed databases
+
+Monotonic read/write
+    Once you&#39;ve read a value, you&#39;ll never read an older one.
+    Once your write is reflected, subsequent reads reflect it.
+    Common in session-based consistency
+
+Eventual consistency (weakest)
+    Replicas will converge given no new updates.
+    Cassandra (ONE), DynamoDB default, DNS</code></pre>
+<p><strong>Read-your-writes:</strong> A middle ground that matters for
+user-facing systems. After you write, your subsequent reads see your
+write. Other users may not yet. This is what most applications actually
+need, and it’s achievable without strong consistency.</p>
+<div class="sourceCode" id="cb26"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Cassandra consistency levels (tunable per operation)</span></span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>session.execute(</span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;INSERT INTO orders (id, status) VALUES (</span><span class="sc">%s</span><span class="st">, </span><span class="sc">%s</span><span class="st">)&quot;</span>,</span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a>    (order_id, <span class="st">&#39;CREATED&#39;</span>),</span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a>    consistency_level<span class="op">=</span>ConsistencyLevel.QUORUM  <span class="co"># Write to majority</span></span>
+<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb26-7"><a href="#cb26-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-8"><a href="#cb26-8" aria-hidden="true" tabindex="-1"></a>result <span class="op">=</span> session.execute(</span>
+<span id="cb26-9"><a href="#cb26-9" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;SELECT status FROM orders WHERE id=</span><span class="sc">%s</span><span class="st">&quot;</span>,</span>
+<span id="cb26-10"><a href="#cb26-10" aria-hidden="true" tabindex="-1"></a>    (order_id,),</span>
+<span id="cb26-11"><a href="#cb26-11" aria-hidden="true" tabindex="-1"></a>    consistency_level<span class="op">=</span>ConsistencyLevel.QUORUM  <span class="co"># Read from majority → read-your-writes guaranteed</span></span>
+<span id="cb26-12"><a href="#cb26-12" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb26-13"><a href="#cb26-13" aria-hidden="true" tabindex="-1"></a><span class="co"># QUORUM + QUORUM = strong consistency in Cassandra</span></span>
+<span id="cb26-14"><a href="#cb26-14" aria-hidden="true" tabindex="-1"></a><span class="co"># ONE + ONE = eventual consistency (faster, can read stale)</span></span></code></pre></div>
+<h3 id="consensus-algorithms-raft-in-depth">3.3 Consensus algorithms —
+Raft in depth</h3>
+<p>Raft was designed to be understandable (vs Paxos, which is
+notoriously difficult). It’s used in etcd, CockroachDB, TiKV, Consul,
+and NATS JetStream.</p>
+<p><strong>Raft guarantees:</strong> - At most one leader per term - A
+leader has all committed log entries from previous terms - A log entry
+is committed when stored on a majority of servers - Committed entries
+are never overwritten</p>
+<p><strong>Leader election — exact sequence:</strong></p>
+<pre><code>All nodes start as followers with randomised election timeout (e.g., 150–300ms)
+
+If a follower receives no heartbeat before timeout:
+  1. Convert to Candidate
+  2. Increment currentTerm
+  3. Vote for self
+  4. Reset election timer
+  5. Send RequestVote RPC to all other nodes
+
+A node grants a vote if:
+  a) candidate&#39;s term ≥ voter&#39;s currentTerm (not voting for stale candidates)
+  b) voter has not already voted in this term
+  c) candidate&#39;s log is at least as up-to-date:
+     - candidate&#39;s lastLogTerm &gt; voter&#39;s lastLogTerm, OR
+     - candidate&#39;s lastLogTerm == voter&#39;s lastLogTerm AND
+       candidate&#39;s lastLogIndex &gt;= voter&#39;s lastLogIndex
+
+If Candidate receives votes from majority (⌊n/2⌋ + 1):
+  → Becomes Leader
+  → Immediately sends empty AppendEntries (heartbeats) to all followers
+  → This resets their election timers, preventing new elections</code></pre>
+<p><strong>Log replication — exact sequence:</strong></p>
+<pre><code>Client sends write to Leader
+  1. Leader appends entry to its log (not yet committed)
+  2. Leader sends AppendEntries RPC to all followers
+     - Contains: term, leaderId, prevLogIndex, prevLogTerm, entries[], leaderCommit
+  3. Each follower:
+     - Verifies consistency (prevLogIndex/prevLogTerm matches its log)
+     - Appends the entry to its own log
+     - Returns success to leader
+  4. Once leader receives success from majority:
+     - Marks entry as committed
+     - Applies to state machine
+     - Returns success to client
+  5. Next AppendEntries to followers includes updated commitIndex
+     - Followers apply committed entries to their state machines</code></pre>
+<p><strong>Log consistency check (AppendEntries
+consistency):</strong></p>
+<p>Before appending, a follower verifies: “Is the entry immediately
+before this one what we expect?” (prevLogIndex and prevLogTerm must
+match). If not, the follower rejects and the leader sends older entries
+until they find a matching point. This is how Raft handles followers
+that fall behind.</p>
+<div class="sourceCode" id="cb29"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Watch Raft in action in etcd</span></span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a><span class="va">ETCDCTL_API</span><span class="op">=</span>3 <span class="ex">etcdctl</span> watch <span class="at">--prefix</span> /election <span class="at">--rev</span><span class="op">=</span>0</span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Check cluster state</span></span>
+<span id="cb29-5"><a href="#cb29-5" aria-hidden="true" tabindex="-1"></a><span class="ex">etcdctl</span> endpoint status <span class="at">--cluster</span> <span class="at">-w</span> table</span>
+<span id="cb29-6"><a href="#cb29-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Shows: endpoint, id, version, db-size, is-leader, is-learner, raft-term, raft-index</span></span>
+<span id="cb29-7"><a href="#cb29-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-8"><a href="#cb29-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Current leader</span></span>
+<span id="cb29-9"><a href="#cb29-9" aria-hidden="true" tabindex="-1"></a><span class="ex">etcdctl</span> endpoint status <span class="at">--cluster</span> <span class="at">-w</span> json <span class="kw">|</span> <span class="ex">jq</span> <span class="st">&#39;.[] | select(.Status.leader == .Status.header.member_id) | .Endpoint&#39;</span></span>
+<span id="cb29-10"><a href="#cb29-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-11"><a href="#cb29-11" aria-hidden="true" tabindex="-1"></a><span class="co"># Raft metrics in Prometheus</span></span>
+<span id="cb29-12"><a href="#cb29-12" aria-hidden="true" tabindex="-1"></a><span class="ex">etcd_server_leader_changes_seen_total</span>        <span class="co"># Should be very low</span></span>
+<span id="cb29-13"><a href="#cb29-13" aria-hidden="true" tabindex="-1"></a><span class="ex">etcd_server_proposals_committed_total</span>        <span class="co"># Ops committed</span></span>
+<span id="cb29-14"><a href="#cb29-14" aria-hidden="true" tabindex="-1"></a><span class="ex">etcd_server_proposals_failed_total</span>           <span class="co"># Should be 0</span></span>
+<span id="cb29-15"><a href="#cb29-15" aria-hidden="true" tabindex="-1"></a><span class="ex">etcd_disk_wal_fsync_duration_seconds_bucket</span>  <span class="co"># WAL write latency</span></span></code></pre></div>
+<p><strong>Why 3, 5, or 7 nodes — never even:</strong></p>
+<p>With n nodes, Raft requires ⌊n/2⌋+1 for quorum. Fault tolerance = n -
+quorum = ⌊n/2⌋.</p>
+<table>
+<thead>
+<tr class="header">
+<th>Nodes</th>
+<th>Quorum</th>
+<th>Fault tolerance</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>1</td>
+<td>1</td>
+<td>0</td>
+</tr>
+<tr class="even">
+<td>2</td>
+<td>2</td>
+<td>0</td>
+</tr>
+<tr class="odd">
+<td>3</td>
+<td>2</td>
+<td>1</td>
+</tr>
+<tr class="even">
+<td>4</td>
+<td>3</td>
+<td>1</td>
+</tr>
+<tr class="odd">
+<td>5</td>
+<td>3</td>
+<td>2</td>
+</tr>
+<tr class="even">
+<td>6</td>
+<td>4</td>
+<td>2</td>
+</tr>
+<tr class="odd">
+<td>7</td>
+<td>4</td>
+<td>3</td>
+</tr>
+</tbody>
+</table>
+<p>4 nodes gives the same fault tolerance as 3 but requires more
+coordination overhead. 6 gives the same as 5. Even numbers add cost
+without adding fault tolerance.</p>
+<h3 id="vector-clocks-and-causality">3.4 Vector clocks and
+causality</h3>
+<p>In distributed systems with no central clock, how do you order
+events? Lamport clocks and vector clocks solve different parts of this
+problem.</p>
+<p><strong>Lamport clocks:</strong> A logical counter. Each process
+increments its counter on every event. On message receipt, set counter =
+max(local, received) + 1. Gives a partial order: if A→B (A causally
+precedes B), then timestamp(A) &lt; timestamp(B). But the converse is
+not true — higher timestamp doesn’t imply causality.</p>
+<p><strong>Vector clocks:</strong> Each process maintains a vector of
+counters (one per process). On event: increment own counter. On send:
+include entire vector. On receive: take component-wise maximum, then
+increment own counter.</p>
+<pre><code>Process A: [1,0,0] → [2,0,0] → [3,0,0]
+Process B:                [0,1,0] → [0,2,0] receives A[2,0,0] → [2,3,0]
+Process C:                                              [0,0,1] receives B[2,3,0] → [2,3,2]</code></pre>
+<p>If vector clock of A ≤ vector clock of B (component-wise), then A
+causally precedes B. If neither ≤ the other, they are concurrent. This
+is how CRDTs (Conflict-free Replicated Data Types) and Cassandra’s
+last-write-wins work.</p>
+<hr />
+<h2 id="storage-internals">4. Storage internals</h2>
+<h3 id="storage-hardware-what-the-software-sees">4.1 Storage hardware —
+what the software sees</h3>
+<p><strong>SSD internals — why they’re different from HDDs:</strong></p>
+<p>Flash NAND cells can be read and written but must be erased before
+writing. Erasure happens at block granularity (256KB–1MB). Writing
+happens at page granularity (4–16KB). If you want to update a 4KB page
+in a block, you must: 1. Read the entire block (~256KB) into buffer 2.
+Modify the relevant page 3. Erase the block 4. Write the entire block
+back</p>
+<p>This is write amplification. For sequential writes (append-only),
+it’s close to 1:1. For random writes, it can be 10:1 or worse.</p>
+<p><strong>FTL (Flash Translation Layer):</strong> The SSD’s internal
+firmware that maps logical block addresses (what the OS sees) to
+physical flash pages. The FTL implements wear levelling (spread writes
+across cells to extend life) and garbage collection (consolidate
+partially-valid blocks). The FTL’s behaviour significantly impacts write
+amplification and latency variance.</p>
+<div class="sourceCode" id="cb31"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Check SSD health (wear indicator, reallocated sectors)</span></span>
+<span id="cb31-2"><a href="#cb31-2" aria-hidden="true" tabindex="-1"></a><span class="ex">smartctl</span> <span class="at">-a</span> /dev/sda</span>
+<span id="cb31-3"><a href="#cb31-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Look for: Wear_Leveling_Count, Media_Wearout_Indicator</span></span>
+<span id="cb31-4"><a href="#cb31-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-5"><a href="#cb31-5" aria-hidden="true" tabindex="-1"></a><span class="co"># I/O stats from the kernel</span></span>
+<span id="cb31-6"><a href="#cb31-6" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /proc/diskstats</span>
+<span id="cb31-7"><a href="#cb31-7" aria-hidden="true" tabindex="-1"></a><span class="co"># Or with iostat:</span></span>
+<span id="cb31-8"><a href="#cb31-8" aria-hidden="true" tabindex="-1"></a><span class="ex">iostat</span> <span class="at">-x</span> 1  <span class="co"># Extended stats including await (avg wait), %util</span></span>
+<span id="cb31-9"><a href="#cb31-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-10"><a href="#cb31-10" aria-hidden="true" tabindex="-1"></a><span class="co"># Block device queue depth</span></span>
+<span id="cb31-11"><a href="#cb31-11" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /sys/block/sda/queue/nr_requests  <span class="co"># How many I/Os can queue</span></span>
+<span id="cb31-12"><a href="#cb31-12" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /sys/block/sda/queue/scheduler    <span class="co"># I/O scheduler (none/mq-deadline/bfq)</span></span></code></pre></div>
+<p><strong>I/O schedulers:</strong></p>
+<ul>
+<li><code>none</code> (noop): No reordering. Best for SSDs and NVMe
+(they do their own scheduling internally)</li>
+<li><code>mq-deadline</code>: Enforces a deadline per request. Prevents
+request starvation. Good for spinning disks.</li>
+<li><code>bfq</code> (Budget Fair Queueing): Per-process I/O fairness.
+Good for desktop/interactive workloads.</li>
+</ul>
+<p>For cloud VMs with NVMe-backed storage, <code>none</code> is usually
+optimal.</p>
+<h3 id="lsm-trees-write-optimised-storage">4.2 LSM trees —
+write-optimised storage</h3>
+<p>Log-Structured Merge (LSM) trees power: LevelDB, RocksDB, Cassandra,
+etcd (via bbolt for metadata, but conceptually similar), Prometheus
+TSDB, InfluxDB, TiKV.</p>
+<p><strong>The core insight:</strong> Sequential writes to append-only
+structures are dramatically faster than random in-place updates on both
+HDDs and SSDs. LSM trees convert all writes to sequential appends.</p>
+<p><strong>Write path:</strong></p>
+<pre><code>Write arrives
+    ↓
+1. Append to WAL (Write-Ahead Log) — for crash recovery
+    ↓
+2. Insert into MemTable (in-memory sorted structure, usually skip list or red-black tree)
+    ↓
+3. When MemTable reaches size threshold (~64MB):
+   Flush to disk as an SSTable (Sorted String Table) — immutable, sorted file
+    ↓
+4. SSTable compaction (background): merge SSTables, eliminate deleted/overwritten keys</code></pre>
+<p><strong>Read path:</strong></p>
+<pre><code>Read arrives
+    ↓
+1. Check MemTable (most recent data)
+    ↓ (not found)
+2. Check L0 SSTables (most recent flushed, may overlap)
+    ↓ (not found)
+3. Check L1, L2, L3... SSTables (older, non-overlapping within a level)
+    Bloom filters skip SSTables that can&#39;t possibly contain the key
+    ↓
+4. Return value (or not found)</code></pre>
+<p><strong>Bloom filters:</strong> A probabilistic data structure that
+answers “definitely not here” or “probably here.” Each SSTable has a
+bloom filter. A read checks the bloom filter before opening the SSTable
+file. False positives are possible (opens a file that doesn’t have the
+key) but false negatives are not (never skips a file that has the
+key).</p>
+<p><strong>Compaction strategies:</strong></p>
+<p><em>Levelled (RocksDB default, Cassandra STCS/LTCS):</em> - L0:
+small, newly flushed SSTables (can overlap) - L1: one sorted run, ~10×
+larger than L0 - L2: one sorted run, ~10× larger than L1 - Compaction
+merges L(n) files into L(n+1) - Read amplification: O(levels) —
+predictable - Write amplification: O(levels × level_size_multiplier) —
+higher writes</p>
+<p><em>Tiered (size-tiered, used in Cassandra STCS):</em> - SSTables
+grouped by size - Compaction merges same-size SSTables - Read
+amplification: higher (more SSTables to check) - Write amplification:
+lower - Better for write-heavy workloads</p>
+<h3 id="ceph-architecture">4.3 Ceph architecture</h3>
+<p>Ceph is a unified distributed storage system providing object (RADOS
+Gateway / S3), block (RADOS Block Device / RBD), and file (CephFS)
+storage — all built on the same underlying RADOS (Reliable Autonomic
+Distributed Object Store).</p>
+<p><strong>The RADOS stack:</strong></p>
+<pre><code>Client (librados)
+    ↓
+Object → PG mapping via CRUSH
+    ↓
+OSD (Object Storage Daemon) — one per disk
+    ↓
+BlueStore (Ceph&#39;s own storage backend)
+    ├── Block device (raw, no filesystem)
+    ├── RocksDB for metadata (checksums, object map)
+    └── Direct I/O for data (bypasses page cache, avoids double buffering)</code></pre>
+<p><strong>CRUSH algorithm:</strong></p>
+<p>CRUSH (Controlled Replication Under Scalable Hashing) maps objects to
+OSDs using a deterministic pseudo-random function. Any client can
+compute the mapping without a metadata server lookup:</p>
+<pre><code>object_id → hash → PG (Placement Group) → CRUSH map → list of OSDs</code></pre>
+<p>The CRUSH map encodes the physical hierarchy (datacentre → rack →
+host → OSD) and the replication rules. This hierarchy is used to ensure
+replicas land on different failure domains.</p>
+<div class="sourceCode" id="cb36"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb36-1"><a href="#cb36-1" aria-hidden="true" tabindex="-1"></a><span class="co"># See CRUSH map</span></span>
+<span id="cb36-2"><a href="#cb36-2" aria-hidden="true" tabindex="-1"></a><span class="ex">ceph</span> osd getcrushmap <span class="at">-o</span> /tmp/crush.bin</span>
+<span id="cb36-3"><a href="#cb36-3" aria-hidden="true" tabindex="-1"></a><span class="ex">crushtool</span> <span class="at">-d</span> /tmp/crush.bin <span class="at">-o</span> /tmp/crush.txt</span>
+<span id="cb36-4"><a href="#cb36-4" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /tmp/crush.txt</span>
+<span id="cb36-5"><a href="#cb36-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb36-6"><a href="#cb36-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Map an object to its OSDs</span></span>
+<span id="cb36-7"><a href="#cb36-7" aria-hidden="true" tabindex="-1"></a><span class="ex">ceph</span> osd map <span class="op">&lt;</span>pool<span class="op">&gt;</span> <span class="op">&lt;</span>object-name<span class="op">&gt;</span></span>
+<span id="cb36-8"><a href="#cb36-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Shows: osdmap, pool, object, pg, acting [1,3,2] → primary OSD 1, replicas 3,2</span></span>
+<span id="cb36-9"><a href="#cb36-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb36-10"><a href="#cb36-10" aria-hidden="true" tabindex="-1"></a><span class="co"># OSD tree (physical layout)</span></span>
+<span id="cb36-11"><a href="#cb36-11" aria-hidden="true" tabindex="-1"></a><span class="ex">ceph</span> osd tree</span>
+<span id="cb36-12"><a href="#cb36-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb36-13"><a href="#cb36-13" aria-hidden="true" tabindex="-1"></a><span class="co"># PG states</span></span>
+<span id="cb36-14"><a href="#cb36-14" aria-hidden="true" tabindex="-1"></a><span class="ex">ceph</span> pg stat</span>
+<span id="cb36-15"><a href="#cb36-15" aria-hidden="true" tabindex="-1"></a><span class="ex">ceph</span> pg dump <span class="kw">|</span> <span class="fu">head</span> <span class="at">-30</span></span>
+<span id="cb36-16"><a href="#cb36-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb36-17"><a href="#cb36-17" aria-hidden="true" tabindex="-1"></a><span class="co"># Active+clean = healthy</span></span>
+<span id="cb36-18"><a href="#cb36-18" aria-hidden="true" tabindex="-1"></a><span class="co"># Active+degraded = one or more replicas missing but still serving I/O</span></span>
+<span id="cb36-19"><a href="#cb36-19" aria-hidden="true" tabindex="-1"></a><span class="co"># Active+undersized = fewer replicas than required (but still serving)</span></span>
+<span id="cb36-20"><a href="#cb36-20" aria-hidden="true" tabindex="-1"></a><span class="co"># Recovering = background repair in progress</span></span>
+<span id="cb36-21"><a href="#cb36-21" aria-hidden="true" tabindex="-1"></a><span class="co"># Incomplete = not enough up-to-date replicas — I/O blocked</span></span>
+<span id="cb36-22"><a href="#cb36-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb36-23"><a href="#cb36-23" aria-hidden="true" tabindex="-1"></a><span class="co"># Monitor cluster I/O</span></span>
+<span id="cb36-24"><a href="#cb36-24" aria-hidden="true" tabindex="-1"></a><span class="ex">ceph</span> <span class="at">-w</span>  <span class="co"># Live event stream</span></span>
+<span id="cb36-25"><a href="#cb36-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb36-26"><a href="#cb36-26" aria-hidden="true" tabindex="-1"></a><span class="co"># OSD performance</span></span>
+<span id="cb36-27"><a href="#cb36-27" aria-hidden="true" tabindex="-1"></a><span class="ex">ceph</span> osd perf  <span class="co"># Latency per OSD — identifies slow OSDs</span></span></code></pre></div>
+<p><strong>Why Ceph latency is higher than local storage:</strong></p>
+<ol type="1">
+<li><strong>Network RTT:</strong> Every write goes to the primary OSD
+via network, then primary replicates to secondary/tertiary OSDs, then
+waits for their ACK before returning to client. Even at 0.1ms NIC
+latency, 3 hops = 3× latency.</li>
+<li><strong>Journaling:</strong> BlueStore writes to RocksDB WAL for
+metadata, then to block device for data.</li>
+<li><strong>PG overhead:</strong> Objects are routed through PG mapping,
+OSD threading model, and BlueStore I/O path.</li>
+</ol>
+<p><strong>Bluestore</strong> replaced the older Filestore (which stored
+objects as files on XFS/ext4) to eliminate double-write (once to
+journal, once to filesystem). BlueStore writes directly to the block
+device with its own checksum and space management.</p>
+<h3 id="csi-container-storage-interface">4.4 CSI — Container Storage
+Interface</h3>
+<p>CSI is the standard API between orchestrators (Kubernetes, Nomad) and
+storage systems. A CSI driver exposes a gRPC server implementing three
+services:</p>
+<pre><code>Identity service:
+  GetPluginInfo()       → driver name and version
+  GetPluginCapabilities() → what features the driver supports
+  Probe()               → health check
+
+Controller service (runs as Deployment — cluster-wide operations):
+  CreateVolume()        → provision new storage (e.g., create EBS volume)
+  DeleteVolume()        → deprovision storage
+  ControllerPublishVolume()  → attach volume to a node (e.g., attach EBS to EC2)
+  ControllerUnpublishVolume() → detach volume from node
+  ListVolumes()
+  CreateSnapshot()
+  DeleteSnapshot()
+
+Node service (runs as DaemonSet — per-node operations):
+  NodeStageVolume()     → format and mount at a global path on the node
+  NodePublishVolume()   → bind-mount from global path into pod&#39;s volume path
+  NodeUnpublishVolume() → unmount from pod
+  NodeUnstageVolume()   → unmount from global path
+  NodeGetCapabilities() → what node-level features the driver supports</code></pre>
+<p><strong>The lifecycle of a PVC to mounted volume:</strong></p>
+<pre><code>1. User creates PVC
+2. kube-controller-manager PersistentVolumeClaim controller watches, finds a matching StorageClass
+3. CSI external-provisioner sidecar calls CreateVolume() on CSI controller
+4. CSI driver provisions storage, returns VolumeId
+5. PV is created and bound to PVC
+
+6. Pod is scheduled to a node
+7. kube-controller-manager attachdetach controller calls ControllerPublishVolume()
+   (for network storage — skip for local)
+8. CSI external-attacher sidecar watches VolumeAttachment objects
+
+9. kubelet on the node calls NodeStageVolume()
+   → formats filesystem if new
+   → mounts at /var/lib/kubelet/plugins/kubernetes.io/csi/pv/&lt;pv-name&gt;/globalmount/
+10. kubelet calls NodePublishVolume()
+    → bind-mounts into pod: /var/lib/kubelet/pods/&lt;pod-uid&gt;/volumes/kubernetes.io~csi/&lt;pv-name&gt;/mount
+
+11. Container starts with the bind-mounted volume available at its mount path</code></pre>
+<div class="sourceCode" id="cb39"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb39-1"><a href="#cb39-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Debug a stuck PVC</span></span>
+<span id="cb39-2"><a href="#cb39-2" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> describe pvc <span class="op">&lt;</span>name<span class="op">&gt;</span></span>
+<span id="cb39-3"><a href="#cb39-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Look for events: ProvisioningFailed, FailedMount, etc.</span></span>
+<span id="cb39-4"><a href="#cb39-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb39-5"><a href="#cb39-5" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> describe pod <span class="op">&lt;</span>name<span class="op">&gt;</span></span>
+<span id="cb39-6"><a href="#cb39-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Look for: Unable to attach or mount volumes</span></span>
+<span id="cb39-7"><a href="#cb39-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb39-8"><a href="#cb39-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Check CSI driver logs</span></span>
+<span id="cb39-9"><a href="#cb39-9" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> logs <span class="at">-n</span> kube-system <span class="at">-l</span> app=csi-<span class="op">&lt;</span>driver<span class="op">&gt;</span>-controller <span class="at">-c</span> csi-provisioner</span>
+<span id="cb39-10"><a href="#cb39-10" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> logs <span class="at">-n</span> kube-system <span class="at">-l</span> app=csi-<span class="op">&lt;</span>driver<span class="op">&gt;</span>-node <span class="at">-c</span> csi-<span class="op">&lt;</span>driver<span class="op">&gt;</span></span>
+<span id="cb39-11"><a href="#cb39-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb39-12"><a href="#cb39-12" aria-hidden="true" tabindex="-1"></a><span class="co"># Check volume attachments (controller publish state)</span></span>
+<span id="cb39-13"><a href="#cb39-13" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> get volumeattachments</span>
+<span id="cb39-14"><a href="#cb39-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb39-15"><a href="#cb39-15" aria-hidden="true" tabindex="-1"></a><span class="co"># Check what&#39;s mounted on a node</span></span>
+<span id="cb39-16"><a href="#cb39-16" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> get <span class="at">--raw</span> <span class="st">&quot;/api/v1/nodes/&lt;node&gt;/proxy/stats/summary&quot;</span> <span class="kw">|</span> <span class="ex">jq</span> <span class="st">&#39;.node.fs&#39;</span></span>
+<span id="cb39-17"><a href="#cb39-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb39-18"><a href="#cb39-18" aria-hidden="true" tabindex="-1"></a><span class="co"># See all mounts on the node (connect to node)</span></span>
+<span id="cb39-19"><a href="#cb39-19" aria-hidden="true" tabindex="-1"></a><span class="ex">findmnt</span> <span class="kw">|</span> <span class="fu">grep</span> kubelet</span></code></pre></div>
+<hr />
+<h2 id="common-misconceptions">Common misconceptions</h2>
+<table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Misconception</th>
+<th>Reality</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>“Containers are isolated from the host kernel”</td>
+<td>They share the host kernel. A container syscall goes to the same
+kernel.</td>
+</tr>
+<tr class="even">
+<td>“CPU limits protect performance”</td>
+<td>CPU limits cause throttling — periodic execution freezes. Requests
+are for scheduling; limits are for caps.</td>
+</tr>
+<tr class="odd">
+<td>“CAP means pick 2 of 3”</td>
+<td>P is mandatory. The choice is C vs A during a partition only.</td>
+</tr>
+<tr class="even">
+<td>“Raft is always safe”</td>
+<td>Raft requires correct clock assumptions. Clock skew beyond election
+timeout causes unnecessary elections.</td>
+</tr>
+<tr class="odd">
+<td>“SSD I/O is always fast”</td>
+<td>SSDs have garbage collection pauses (latency spikes), write
+amplification, and thermal throttling under sustained load.</td>
+</tr>
+<tr class="even">
+<td>“etcd is a key-value store”</td>
+<td>It’s a distributed consensus system with a key-value interface. The
+consensus layer is the important part.</td>
+</tr>
+<tr class="odd">
+<td>“eBPF is just for debugging”</td>
+<td>eBPF powers production load balancers (Cilium), security enforcement
+(Falco), and network policy at hyperscaler scale.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="hands-on-exercises">Hands-on exercises</h2>
+<ol type="1">
+<li>Create a network namespace, veth pair, and a bridge. Ping across the
+namespace boundary. Trace the packet path with <code>tcpdump</code> on
+both interfaces simultaneously.</li>
+<li>Write a minimal cgroup (v2) that limits a process to 10% CPU. Verify
+it throttles using <code>cpu.stat</code>. Check
+<code>nr_throttled</code> vs <code>nr_periods</code>.</li>
+<li>Use <code>bpftrace</code> to write a one-liner that prints a
+histogram of <code>read()</code> syscall latency, grouped by the calling
+process name.</li>
+<li>Set up a 3-node etcd cluster. Kill the leader. Measure election
+time. Kill two followers. Observe write failure. Restore quorum.</li>
+<li>Manually walk the LSM compaction of a local RocksDB instance using
+<code>ldb</code> tool — write 1M keys, observe L0→L1 compaction, measure
+read amplification before and after.</li>
+<li>Run <code>iostat -x 1</code> on a system under write load. Interpret
+<code>await</code>, <code>svctm</code>, <code>%util</code>. Correlate
+with <code>iotop</code>.</li>
+</ol>
+<hr />
+<h2 id="what-to-study-next-phase-2-kubernetes-mastery">What to study
+next → <a href="phase2-kubernetes-mastery.html">Phase 2 — Kubernetes
+Mastery</a></h2>
+<p>Everything in Phase 2 is built on Phase 1 primitives: the scheduler
+uses cgroups and namespaces; etcd uses Raft; CNI plugins use network
+namespaces and eBPF; RBAC and PodSecurity use Linux user namespaces and
+seccomp syscall filtering.</p>
+    <div class="phase-nav-foot">
+            <a href="phase2-kubernetes-mastery.html" class="next"><span class="label">next &rarr;</span>Phase 2 — Kubernetes Mastery</a>
+      </div>
+  </div>
+
+<footer class="site-footer">
+  senior cloud engineer study system — generated reference material, not affiliated with any employer
+</footer>
+
+</body>
+</html>
