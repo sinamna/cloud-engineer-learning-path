@@ -1093,6 +1093,6 @@ fio --rw=write --ioengine=sync --fdatasync=1 --directory=/var/lib/etcd \
 
 ---
 
-## What to study next → [Phase 3 — Observability & SRE](./phase3-observability-sre.md)
+## What to study next → [Phase 3 — Observability & SRE](phase3-observability-sre.html)
 
 The systems you've learned to build in Phase 2 need to be observed and operated at scale. Phase 3 covers Prometheus TSDB internals (including cardinality — the most common Prometheus production problem), distributed tracing with OpenTelemetry, SLO engineering, and incident response discipline.

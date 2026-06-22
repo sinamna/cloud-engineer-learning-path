@@ -901,6 +901,6 @@ chaos-mesh-dashboard export-experiment api-pod-failure
 
 ---
 
-## What to study next → [Phase 4 — Architecture & Design](./phase4-architecture-design.md)
+## What to study next → [Phase 4 — Architecture & Design](phase4-architecture-design.html)
 
 Phase 4 moves from building and operating systems to designing them — multi-region high availability, platform engineering, FinOps, and zero-trust security architecture.

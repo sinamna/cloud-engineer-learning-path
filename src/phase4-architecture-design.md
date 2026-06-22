@@ -957,6 +957,6 @@ spec:
 
 ---
 
-## What to study next → [Phase 5 — Interview Prep](./phase5-interview-prep.md)
+## What to study next → [Phase 5 — Security Concepts](phase5-security-concepts.html)
 
 Phase 5 converts everything you've learned in Phases 1–4 into interview performance: system design under time pressure, behavioral questions with STAR format, and a Kubernetes knowledge quiz at senior/staff level difficulty.

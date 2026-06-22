@@ -443,3 +443,5 @@ kube-bench run --targets master,node       # CIS Kubernetes Benchmark
 - **Verifiable, not assumed** — if you can't test the guarantee, you don't have it.
 
 > **Mental model** — You cannot prove a system is *secure* — only that it resists *a specified attacker*. So security work is **threat model → layered controls → continuous verification**, on repeat. Think like a castle: you don't build one infinitely tall wall, you build a moat, an outer wall, an inner keep, and a watch that actually checks — because you assume each layer will eventually be tested.
+
+## What to study next → [Phase 6 — Interview Prep](phase6-interview-prep.html)

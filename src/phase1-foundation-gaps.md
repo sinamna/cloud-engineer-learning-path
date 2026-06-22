@@ -992,6 +992,6 @@ findmnt | grep kubelet
 
 ---
 
-## What to study next → [Phase 2 — Kubernetes Mastery](./phase2-kubernetes-mastery.md)
+## What to study next → [Phase 2 — Kubernetes Mastery](phase2-kubernetes-mastery.html)
 
 Everything in Phase 2 is built on Phase 1 primitives: the scheduler uses cgroups and namespaces; etcd uses Raft; CNI plugins use network namespaces and eBPF; RBAC and PodSecurity use Linux user namespaces and seccomp syscall filtering.
