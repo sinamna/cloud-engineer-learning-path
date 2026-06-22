@@ -3,6 +3,41 @@
 
 > Authoritative deep-dive into Kubernetes internals. Not a tutorial — a reference at the depth required for senior engineering roles and production debugging.
 
+<div class="topic-legend">
+<span><span class="swatch" style="background:#6aa6ff"></span>Core concept</span>
+<span><span class="swatch" style="background:#e8b84e"></span>Interview hot topic</span>
+<span><span class="swatch" style="background:#b18cff"></span>Architecture depth</span>
+<span><span class="swatch" style="background:#e87a4e"></span>Gap to close</span>
+<span><span class="swatch" style="background:#4ee8a0"></span>Hands-on practice</span>
+</div>
+
+<div class="topic-grid">
+<a class="topic-card" href="#the-kubernetes-control-loop-everything-is-reconciliation">
+<h4>Control loop &amp; reconciliation</h4>
+<div class="tags"><span class="cat cat-core">Core concept</span></div>
+</a>
+<a class="topic-card" href="#the-kubernetes-scheduler">
+<h4>Scheduler internals</h4>
+<div class="tags"><span class="cat cat-arch">Architecture depth</span><span class="cat cat-interview">Interview hot topic</span></div>
+</a>
+<a class="topic-card" href="#operators-and-crds">
+<h4>Operators &amp; CRDs</h4>
+<div class="tags"><span class="cat cat-arch">Architecture depth</span><span class="cat cat-practice">Hands-on practice</span></div>
+</a>
+<a class="topic-card" href="#kubernetes-networking-in-depth">
+<h4>K8s networking depth</h4>
+<div class="tags"><span class="cat cat-gap">Gap to close</span><span class="cat cat-interview">Interview hot topic</span></div>
+</a>
+<a class="topic-card" href="#resource-management-and-autoscaling">
+<h4>Resource &amp; autoscaling</h4>
+<div class="tags"><span class="cat cat-core">Core concept</span><span class="cat cat-practice">Hands-on practice</span></div>
+</a>
+<a class="topic-card" href="#etcd-internals">
+<h4>etcd &amp; control plane</h4>
+<div class="tags"><span class="cat cat-gap">Gap to close</span><span class="cat cat-interview">Interview hot topic</span></div>
+</a>
+</div>
+
 ---
 
 ## Learning objectives

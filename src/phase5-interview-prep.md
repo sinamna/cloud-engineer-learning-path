@@ -3,6 +3,33 @@
 
 > Interview preparation as a discipline: not memorising answers, but building the frameworks that generate correct answers under pressure.
 
+<div class="topic-legend">
+<span><span class="swatch" style="background:#6aa6ff"></span>Core concept</span>
+<span><span class="swatch" style="background:#e8b84e"></span>Interview hot topic</span>
+<span><span class="swatch" style="background:#b18cff"></span>Architecture depth</span>
+<span><span class="swatch" style="background:#e87a4e"></span>Gap to close</span>
+<span><span class="swatch" style="background:#4ee8a0"></span>Hands-on practice</span>
+</div>
+
+<div class="topic-grid">
+<a class="topic-card" href="#system-design-methodology-and-scenarios">
+<h4>System design scenarios</h4>
+<div class="tags"><span class="cat cat-interview">Interview hot topic</span><span class="cat cat-practice">Hands-on practice</span></div>
+</a>
+<a class="topic-card" href="#behavioral-questions-frameworks">
+<h4>Behavioral frameworks</h4>
+<div class="tags"><span class="cat cat-interview">Interview hot topic</span></div>
+</a>
+<a class="topic-card" href="#kubernetes-knowledge-quiz">
+<h4>Kubernetes knowledge quiz</h4>
+<div class="tags"><span class="cat cat-interview">Interview hot topic</span><span class="cat cat-practice">Hands-on practice</span></div>
+</a>
+<a class="topic-card" href="#common-senior-level-gaps">
+<h4>Common senior-level gaps</h4>
+<div class="tags"><span class="cat cat-gap">Gap to close</span><span class="cat cat-interview">Interview hot topic</span></div>
+</a>
+</div>
+
 ---
 
 ## Interview strategy overview
