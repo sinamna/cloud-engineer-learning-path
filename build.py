@@ -6,8 +6,8 @@ ORDER = [
     "phase2-kubernetes-mastery",
     "phase3-observability-sre",
     "phase4-architecture-design",
-    "phase5-interview-prep",
-    "security-concepts",
+    "phase5-security-concepts",
+    "phase6-interview-prep",
 ]
 
 TITLES = {
@@ -15,8 +15,8 @@ TITLES = {
     "phase2-kubernetes-mastery": "Phase 2 — Kubernetes Mastery",
     "phase3-observability-sre": "Phase 3 — Observability & SRE",
     "phase4-architecture-design": "Phase 4 — Architecture & Design",
-    "phase5-interview-prep": "Phase 5 — Interview Prep",
-    "security-concepts": "Security Concepts",
+    "phase5-security-concepts": "Phase 5 — Security Concepts",
+    "phase6-interview-prep": "Phase 6 — Interview Prep",
 }
 
 SUBS = {
@@ -24,17 +24,17 @@ SUBS = {
     "phase2-kubernetes-mastery": "Scheduler, operators, networking, security, autoscaling, etcd",
     "phase3-observability-sre": "Prometheus TSDB, OpenTelemetry, SLO engineering, incident management",
     "phase4-architecture-design": "Multi-region HA, platform engineering, FinOps, zero-trust security",
-    "phase5-interview-prep": "System design, behavioral questions, knowledge quiz, common gaps",
-    "security-concepts": "Digital signatures, certificates, TLS handshakes, and Kubernetes security",
+    "phase5-security-concepts": "Digital signatures, certificates, TLS handshakes, and Kubernetes security",
+    "phase6-interview-prep": "System design, behavioral questions, knowledge quiz, common gaps",
 }
 
 EYEBROWS = {
-    "phase1-foundation-gaps": "01 / 05 — foundation",
-    "phase2-kubernetes-mastery": "02 / 05 — kubernetes",
-    "phase3-observability-sre": "03 / 05 — observability",
-    "phase4-architecture-design": "04 / 05 — architecture",
-    "phase5-interview-prep": "05 / 05 — interview prep",
-    "security-concepts": "deep dive — cryptography & kubernetes security",
+    "phase1-foundation-gaps": "01 / 06 — foundation",
+    "phase2-kubernetes-mastery": "02 / 06 — kubernetes",
+    "phase3-observability-sre": "03 / 06 — observability",
+    "phase4-architecture-design": "04 / 06 — architecture",
+    "phase5-security-concepts": "05 / 06 — security",
+    "phase6-interview-prep": "06 / 06 — interview prep",
 }
 
 ACTIVE_KEYS = {
@@ -42,8 +42,8 @@ ACTIVE_KEYS = {
     "phase2-kubernetes-mastery": "p2active",
     "phase3-observability-sre": "p3active",
     "phase4-architecture-design": "p4active",
-    "phase5-interview-prep": "p5active",
-    "security-concepts": "secactive",
+    "phase5-security-concepts": "p5active",
+    "phase6-interview-prep": "p6active",
 }
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
