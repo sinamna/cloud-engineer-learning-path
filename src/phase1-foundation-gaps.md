@@ -380,6 +380,107 @@ A practical gotcha: `rm` doesn't delete data, it removes a *name* (decrements th
 
 > **Mental model** — The inode is the **house; filenames are street signs pointing to it.** A hard link is a second sign for the same house (the house stands until the last sign is removed). A symlink is a sign that says *"go to that other sign"* — useful and flexible, but worthless if the sign it names is taken down.
 
+### 1.9 Virtual memory and paging — how addresses become RAM
+
+Every process believes it owns a private, contiguous address space (e.g. the full 48-bit canonical range on x86-64). That belief is a lie maintained by the **MMU** (Memory Management Unit) and the kernel: virtual addresses are translated to physical frames through **page tables**, one set per process, on every single memory access.
+
+```
+virtual address ──► [ page table walk, 4 levels on x86-64 ] ──► physical frame
+   (per process)        PGD → PUD → PMD → PTE                    (shared RAM)
+                              │
+                        cached in the TLB (Translation Lookaside Buffer)
+                        so the walk is skipped on a hit
+```
+
+**The TLB is the performance linchpin.** A full 4-level page walk is ~4 memory accesses; the TLB caches recent translations so the common case is free. A **TLB miss** is costly; a context switch flushes much of the TLB (unless tagged with a PCID), which is part of why context switches hurt. **Huge pages** (2MB/1GB instead of 4KB) exist specifically to cover more memory with fewer TLB entries — critical for databases and JVMs with large heaps.
+
+**Demand paging and page faults:** memory isn't backed by physical frames until touched. The first access to a page triggers a **page fault**, and the kernel decides what to do:
+
+- **Minor fault** — the page is in RAM (e.g. shared library already loaded, or COW), just not mapped in this process yet. Cheap: fix the mapping.
+- **Major fault** — the page must be read from disk (swapped-out anonymous memory, or a not-yet-loaded file page). Expensive: real I/O.
+
+```bash
+# Watch minor vs major faults — major faults are the ones that hurt
+ps -o min_flt,maj_flt,cmd -p <PID>
+/usr/bin/time -v ./prog        # "Major (requiring I/O) page faults: N"
+cat /proc/<PID>/status | grep -i vmswap     # how much this process has swapped out
+
+# The memory map: every region, its permissions, and backing
+cat /proc/<PID>/maps           # [heap], [stack], libraries, anon, file mappings
+cat /proc/<PID>/smaps_rollup   # totals incl. Pss (proportional set size)
+```
+
+**RSS vs. VSZ vs. PSS** — the numbers people misread: **VSZ** is everything the process *can* address (mostly unbacked promises); **RSS** is physical frames actually resident (but counts shared pages fully in every process); **PSS** divides shared pages by sharers, so summing PSS across processes actually equals real RAM used. Read **PSS** when accounting memory honestly.
+
+> **Mental model** — Virtual memory is a **bank that lets every customer think they have the entire vault**. The page table is the ledger mapping each customer's "their money" to actual physical drawers; the TLB is the teller's short-term memory of where the last few drawers are. A page fault is the moment a customer reaches for money that isn't in a drawer yet — minor if the cash is already in the building, major if a truck has to fetch it from disk.
+
+### 1.10 CPU scheduling — who runs next, and for how long
+
+On a box with more runnable threads than cores, *something* must decide who runs and for how long. That's the scheduler, invoked on every timer tick, wakeup, and blocking syscall. Its job: share CPU fairly while keeping latency low for interactive tasks — two goals in tension.
+
+**The history:** the **O(1)** scheduler (2.6) used fixed priority arrays; it was fast but heuristic-heavy and bad at interactivity. **CFS** (Completely Fair Scheduler, 2007) replaced it with an elegant idea — track each task's **virtual runtime (vruntime)** and always run the task with the smallest vruntime, kept in a red-black tree. Fairness becomes "everyone's vruntime advances at the same rate." **EEVDF** (Earliest Eligible Virtual Deadline First, merged 6.6) is the current evolution, adding explicit latency deadlines so latency-sensitive tasks preempt sooner.
+
+```
+CFS core loop:
+  • each runnable task has a vruntime (CPU time consumed, weighted by nice)
+  • pick the leftmost node (min vruntime) of the red-black runqueue
+  • run it for a slice; its vruntime increases
+  • higher priority (lower nice) → vruntime advances SLOWER → more CPU
+```
+
+**`nice` and weights:** nice values (−20…+19) map to weights; lower nice = higher weight = vruntime grows slower = a bigger share. It's *proportional*, not absolute — nice only matters under contention.
+
+**This is exactly how Kubernetes CPU limits work.** A pod's `cpu` request becomes **cgroup CPU weight** (`cpu.weight` / `cpu.shares`) — a proportional share under contention. A `cpu` *limit* becomes **CFS bandwidth control** (`cpu.max`: quota/period), which *throttles* the cgroup once it spends its quota in a period — even if cores are idle. That throttling is the cause of the infamous "my latency spikes but CPU isn't maxed" Kubernetes bug.
+
+```bash
+chrt -p <PID>                    # scheduling policy & priority of a thread
+cat /proc/<PID>/sched            # per-task scheduler stats incl. vruntime
+nice -n 10 ./batch_job           # start lower-priority
+renice -n 5 -p <PID>             # change priority live
+
+# CFS bandwidth throttling — the Kubernetes-critical signal
+cat /sys/fs/cgroup/<path>/cpu.stat
+# nr_throttled / throttled_usec > 0 means the cgroup hit its CPU limit
+sysctl kernel.sched_latency_ns   # target preemption latency window
+```
+
+> **Mental model** — CFS is a **fair queue where the person who has eaten least always goes next**; `nice` just changes how fast each person's plate "fills" (high priority = eats without the plate filling much, so they keep getting served). Kubernetes CPU *requests* set how big your fair share is under a crowd; CPU *limits* are a hard meter that cuts you off mid-meal even if the kitchen is empty — which is why limit-throttling, not saturation, is often the real latency culprit.
+
+### 1.11 File descriptors — the handle behind every open thing
+
+A file descriptor is just a small integer, but it's the universal handle for *everything* in Unix: files, sockets, pipes, devices, epoll instances, even timers and signals (`timerfd`, `signalfd`). "Everything is a file" really means "everything is reachable through an fd." Understanding the three-level structure explains a surprising number of production bugs:
+
+```
+ Process A                    System-wide                 Filesystem
+ ┌──────────────┐            ┌──────────────────┐        ┌─────────┐
+ │ fd table     │            │ open file table  │        │ inodes  │
+ │ 0 stdin   ───┼───────────►│ entry: offset,   │───────►│ inode 42│
+ │ 1 stdout  ───┼──┐         │  flags, mode     │        └─────────┘
+ │ 2 stderr     │  └────────►│ (one per open()) │
+ │ 3 socket  ───┼───────────►│ entry: …         │
+ └──────────────┘            └──────────────────┘
+   per-process               shared; refcounted
+```
+
+- **fd table** — per process; `fork()` copies it (child shares the same *open file* entries), `exec()` keeps it (minus `O_CLOEXEC` ones). This is how a shell wires up pipes: `dup2()` to point fd 1 at a pipe before `exec`.
+- **open file table** — one entry per `open()`, holding the **read/write offset** and status flags. Two `open()`s of the same file get *independent* offsets; a `dup()`/`fork()` *shares* one offset. That shared-offset detail is why parallel writers to one inherited fd interleave cleanly but two separate opens clobber each other.
+- **inode** — the actual file, refcounted as in §1.8.
+
+**Limits are a classic outage.** Each process has a soft/hard cap on open fds; a busy server (every connection is an fd) or a descriptor leak hits `EMFILE: too many open files` and stops accepting connections while looking otherwise healthy.
+
+```bash
+ulimit -n                         # this shell's soft fd limit
+cat /proc/<PID>/limits | grep -i 'open files'
+ls /proc/<PID>/fd | wc -l         # how many fds this process holds RIGHT NOW
+ls -l /proc/<PID>/fd              # what each points at (files, sockets, pipes)
+lsof -p <PID>                     # same, richer; lsof -i for network fds
+sysctl fs.file-nr                 # system-wide: allocated / max open files
+```
+
+**epoll — why servers scale.** Old `select`/`poll` are O(n): you hand the kernel the whole fd set every call. **epoll** (Linux) registers interest once and returns only the *ready* fds — O(ready), not O(watched). This is the mechanism behind nginx, Redis, and every async runtime handling 100k+ connections; it's the same readiness-notification idea you saw with NAPI (§2) and informers in Kubernetes.
+
+> **Mental model** — A file descriptor is a **coat-check ticket (a number)**; the open file table is the **cloakroom's ledger of where each coat hangs and how far you've read into its pockets (the offset)**; the inode is the coat. `fork()` photocopies your tickets but they point at the same ledger entries (shared offsets); `EMFILE` is the cloakroom running out of ticket numbers and turning away guests — even though the building looks fine.
+
 ---
 
 ## 2. Networking deep dive
