@@ -200,6 +200,32 @@ hr {
 
 .topbar-nav a { color: var(--text-faint); }
 .topbar-nav a:hover, .topbar-nav a.active { color: var(--accent); text-decoration: none; }
+.topbar-nav a.nav-sub { color: var(--text-faint); opacity: 0.7; font-size: 0.72rem; }
+.topbar-nav a.nav-sub:hover, .topbar-nav a.nav-sub.active { color: var(--accent); opacity: 1; }
+
+/* Inline "deep dive" callout linking to a companion page */
+.deepdive-link {
+  display: block;
+  margin: 1.5rem 0;
+  padding: 1rem 1.2rem;
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius);
+  background: var(--accent-bg);
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+.deepdive-link:hover { border-color: var(--accent); text-decoration: none; }
+.deepdive-link .dd-kicker {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.35rem;
+}
+.deepdive-link .dd-title { color: var(--text); }
+.deepdive-link .dd-arrow { color: var(--accent); }
 
 .page-wrap {
   max-width: var(--maxw);

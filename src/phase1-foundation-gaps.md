@@ -279,9 +279,117 @@ cat /sys/fs/cgroup/.../io.stat
 
 > **Key mental model:** A container is: `clone()` with namespace flags (what you can see) + a cgroup (how much you can use) + a union filesystem (overlayfs) providing the root filesystem. There is no "container daemon" running inside. The container's init process is a plain Linux process, visible from the host with a real PID.
 
+### 1.5 The boot process — from power-on to PID 1
+
+Knowing the boot chain turns "the node won't come up" from a panic into a checklist. Each stage hands off to the next:
+
+```
+1. Firmware (UEFI/BIOS)  — POST, find a bootable device, run its bootloader
+2. Bootloader (GRUB)     — load the kernel + initramfs into memory, pass cmdline
+3. Kernel init           — decompress, set up memory, detect CPUs, mount initramfs
+                           as a temporary root (rootfs in RAM)
+4. initramfs             — load just enough drivers (disk, LVM, crypto) to find
+                           and mount the REAL root filesystem, then pivot_root
+5. PID 1 (systemd)       — first userspace process; brings up everything else
+6. systemd targets       — units activate in dependency order until multi-user
+                           (or graphical) target is reached
+```
+
+**Why initramfs exists:** the kernel needs a driver to read the root disk, but the driver might live *on* that disk (chicken-and-egg). The initramfs is a small RAM filesystem with exactly the modules needed to mount the real root — then it gets out of the way.
+
+**systemd** replaced the old sequential SysV init scripts because boot was slow and serial. systemd models everything as **units** (services, sockets, mounts, timers) with explicit dependencies, then activates them **in parallel** along the dependency graph. The tradeoff that made it controversial: it absorbed a huge surface area (logging, DNS, device management) into PID 1, trading Unix minimalism for speed and consistency.
+
+```bash
+systemd-analyze                 # total boot time, broken into firmware/kernel/userspace
+systemd-analyze blame           # slowest units (the #1 boot-debugging command)
+systemd-analyze critical-chain  # the dependency path that gated boot time
+journalctl -b                   # logs from this boot
+journalctl -b -1                # logs from the PREVIOUS boot (crash forensics)
+systemctl list-units --failed   # what didn't come up
+```
+
+### 1.6 The page cache and the memory hierarchy
+
+The single biggest source of "why is my free memory almost zero?!" confusion. Linux uses **all otherwise-idle RAM as a disk cache** — the **page cache**. Every file read populates it; every buffered write lands there first and is flushed later. This memory is *not* lost — it's reclaimed instantly when a process needs it.
+
+```bash
+free -h
+#               total  used  free  shared  buff/cache  available
+#  Mem:          32Gi  8Gi   1Gi      0Gi        23Gi        23Gi
+#  "free" looks alarming (1Gi) but "available" (23Gi) is the real number —
+#  buff/cache is reclaimable. Read `available`, not `free`.
+```
+
+**Dirty pages and writeback:** a buffered write marks a page "dirty" and returns immediately — the actual disk write happens asynchronously via writeback threads. This is why a write can succeed and then be lost on power failure (hence `fsync()` for durability). Tunables govern how much dirty data can accumulate before the kernel forces a flush:
+
+```bash
+sysctl vm.dirty_ratio              # % of RAM of dirty pages that blocks writers
+sysctl vm.dirty_background_ratio   # % at which background flushing starts
+cat /proc/meminfo | grep -i dirty  # Dirty: how much is waiting to be written
+sync                               # force all dirty pages to disk
+echo 1 > /proc/sys/vm/drop_caches  # drop clean page cache (benchmarking only)
+```
+
+**Swap and the OOM killer:** when RAM (including reclaimable cache) is exhausted, the kernel swaps anonymous (non-file-backed) pages to disk; if it still can't satisfy an allocation, the **OOM killer** picks a victim by `oom_score` and kills it. In Kubernetes, a container exceeding its memory limit is OOM-killed by its cgroup — the same mechanism, scoped.
+
+```bash
+dmesg -T | grep -i 'oom\|killed process'    # who got OOM-killed and why
+cat /proc/<PID>/oom_score                    # likelihood this PID is chosen
+```
+
+> **Mental model** — RAM is not a vault you fill and deplete; it's a **whiteboard the kernel keeps fully scribbled with cached disk data because blank space is wasted space**. When a process needs room, the kernel erases the least-useful scribbles instantly. So "free memory" near zero is *healthy*; the number that matters is **available**.
+
+### 1.7 I/O wait, load average, and reading a busy box
+
+`load average` is the most misread metric in Linux. It is **not** CPU utilization — it's the number of tasks **runnable or in uninterruptible sleep (D state, usually disk I/O)**, averaged over 1/5/15 minutes. A load of 8 on an 8-core box can mean "fully busy on CPU" *or* "mostly blocked on a slow disk." You must look further to know which.
+
+```bash
+uptime                 # load avg 1/5/15 min — but doesn't say CPU vs I/O
+vmstat 1               # columns r (runnable) and b (blocked on I/O) split it;
+                       # 'wa' = % time CPUs idle WAITING on I/O
+mpstat -P ALL 1        # per-CPU %usr %sys %iowait %idle
+iostat -x 1            # per-device: %util, await (latency), aqu-sz (queue depth)
+pidstat -d 1           # per-process disk read/write throughput
+```
+
+**`%iowait` is "idle, but only because we're stuck waiting on I/O."** High iowait + high disk `await` = storage is the bottleneck, not CPU. A process stuck in **D state** (uninterruptible sleep) can't even be killed with SIGKILL until its I/O returns — the classic symptom of a hung NFS mount or dying disk.
+
+```bash
+ps -eo pid,stat,wchan,comm | awk '$2 ~ /D/'   # find D-state (I/O-stuck) processes
+cat /proc/<PID>/wchan                          # the kernel function it's blocked in
+```
+
+> **Mental model** — Load average counts **everyone in the queue, including people frozen waiting for a delivery (disk I/O)**, not just those actively being served (CPU). A high number alone tells you the line is long, not *why*. `iowait` and `await` tell you whether the holdup is the kitchen (CPU) or the supplier (disk).
+
+### 1.8 Links and inodes — what a filename really is
+
+A filename is not a file. The file is an **inode** (a numbered metadata record: permissions, size, timestamps, and pointers to data blocks). A directory entry is just a **name → inode-number** mapping. This indirection explains both kinds of links:
+
+- **Hard link** — a second directory entry pointing at the *same inode*. The file has no "original"; both names are equal, and the data is freed only when the inode's link count hits zero. Hard links can't cross filesystems (inode numbers are per-filesystem) or point at directories.
+- **Symbolic (soft) link** — a tiny file whose *contents* are a path string. It points at a *name*, not an inode, so it can cross filesystems and link directories — but it dangles if the target is removed or renamed.
+
+```bash
+ls -li file              # the leading number is the inode; link count follows perms
+ln  file hardlink        # same inode — verify: `ls -li` shows identical inode #s
+ln -s file symlink       # ls -l shows "symlink -> file"; stat shows a separate inode
+stat file                # inode, links, blocks, atime/mtime/ctime
+df -i                    # INODE usage — a disk can be 5% full yet "full" on inodes
+```
+
+A practical gotcha: `rm` doesn't delete data, it removes a *name* (decrements the link count). A file with an open file descriptor but zero links is gone from the namespace yet still on disk until the last FD closes — which is how a deleted log file can keep consuming space until you restart the process holding it.
+
+> **Mental model** — The inode is the **house; filenames are street signs pointing to it.** A hard link is a second sign for the same house (the house stands until the last sign is removed). A symlink is a sign that says *"go to that other sign"* — useful and flexible, but worthless if the sign it names is taken down.
+
 ---
 
 ## 2. Networking deep dive
+
+<a class="deepdive-link" href="deepdive-networking.html">
+<span class="dd-kicker">Dedicated deep dive →</span>
+<span class="dd-title">Networking: OSI to VXLAN — the packet's full journey through the kernel and Kubernetes.</span> <span class="dd-arrow">Read the expanded page →</span>
+</a>
+
+The sections below are the essentials. For the full treatment — network models and their history, the packet's path into the kernel, every tool and what it replaced, and how VXLAN/IPIP overlays build the Kubernetes pod network — see the [networking deep dive](deepdive-networking.html).
 
 ### 2.1 TCP/IP internals
 
@@ -734,7 +842,86 @@ If vector clock of A ≤ vector clock of B (component-wise), then A causally pre
 
 ## 4. Storage internals
 
-### 4.1 Storage hardware — what the software sees
+### 4.1 The three kinds of storage — and what they really are
+
+Before any depth, fix the taxonomy, because the words are used loosely and the differences drive architecture:
+
+| Type | Unit of access | Interface | Who imposes structure | Examples |
+|------|----------------|-----------|----------------------|----------|
+| **Block** | fixed-size blocks (512B/4KB) at an offset | SCSI/NVMe/iSCSI | *you* (a filesystem on top) | EBS, local SSD, SAN, Ceph RBD |
+| **File** | files + directories, byte ranges | POSIX / NFS / SMB | the filesystem (shared) | NFS, EFS, CephFS, your local ext4 |
+| **Object** | whole immutable objects by key | HTTP REST API | the application (flat keyspace) | S3, GCS, Ceph RGW |
+
+**Block** is the rawest: a featureless array of numbered blocks, like a giant spreadsheet of empty cells. It has no concept of "file" — you put a filesystem (ext4, XFS) on top to get files. One writer typically owns it (you can't safely mount one block device read-write on two machines without a cluster filesystem). It's the fastest and most flexible, and the lowest-level.
+
+**File** storage adds a shared, hierarchical namespace with POSIX semantics (permissions, locking, partial writes) accessible by many clients at once (NFS/SMB). Convenient and concurrent, but the POSIX guarantees (especially locking and metadata consistency) are expensive over a network.
+
+**Object** storage drops the hierarchy and POSIX entirely: a flat keyspace of immutable blobs reached over HTTP, with metadata per object and effectively infinite scale. You can't edit an object in place or `seek()` into it like a file — you PUT and GET whole objects. That constraint is *why* it scales to exabytes and underpins data lakes, backups, and static assets.
+
+> **Mental model** — Block storage is a **blank notebook** (you decide if it's a journal or a ledger — i.e. which filesystem). File storage is a **shared filing cabinet** with folders everyone can open at once. Object storage is a **coat check**: hand over a whole coat, get a ticket (key); you can't restyle the coat while it's checked, but the cloakroom can hold millions of them.
+
+### 4.2 A file's journey through the kernel — the full read path
+
+When your process calls `read(fd, buf, 4096)`, here is everything the kernel does. This is *the* path to understand storage performance:
+
+```
+ read(fd, buf, 4096)                                       [user space]
+        │ syscall (mode switch)
+        ▼
+ ┌──────────────────────────────────────────────┐
+ │ VFS (Virtual Filesystem Switch)               │  the abstraction layer:
+ │  fd → struct file → struct inode → f_ops      │  one API over ext4, XFS,
+ │  calls the filesystem's .read_iter()          │  NFS, overlayfs, procfs…
+ └──────────────────────────────────────────────┘
+        │
+        ▼
+ ┌──────────────────────────────────────────────┐
+ │ Page cache lookup (by inode + offset)         │  HIT  → copy page → return
+ │                                               │       (no disk I/O at all!)
+ └──────────────────────────────────────────────┘
+        │ MISS
+        ▼
+ ┌──────────────────────────────────────────────┐
+ │ Filesystem (ext4/XFS): map file offset → LBA  │  "logical block address":
+ │  via extents/block maps in the inode          │  which disk blocks hold this?
+ └──────────────────────────────────────────────┘
+        │  submit bio (block I/O request)
+        ▼
+ ┌──────────────────────────────────────────────┐
+ │ Block layer: bio → request, I/O scheduler     │  merge adjacent I/Os,
+ │ (multi-queue blk-mq), maybe LVM/dm/md mapping │  order, queue per-CPU
+ └──────────────────────────────────────────────┘
+        │
+        ▼
+ ┌──────────────────────────────────────────────┐
+ │ Device driver (NVMe/SCSI/virtio)              │  build command, ring doorbell
+ └──────────────────────────────────────────────┘
+        │  DMA + completion IRQ
+        ▼
+   Disk/SSD/network puts data in RAM → page cache populated →
+   copied to user buf → read() returns. Next read of same block: page-cache HIT.
+```
+
+The two load-bearing ideas:
+
+- **VFS** is why `cat` works identically on an ext4 file, an NFS mount, `/proc/cpuinfo`, and a file inside a container's overlayfs. Every filesystem implements the same `struct file_operations`; VFS dispatches to it. Containers' overlayfs is *just another VFS filesystem* stacking layers.
+- **The page cache short-circuits everything.** A cache hit never touches the block layer or disk — it's a memcpy. This is why the second read is ~1000× faster than the first, why benchmarks must drop caches to be honest, and why "add more RAM" fixes so many I/O problems.
+
+```bash
+# Watch the path live
+strace -e trace=openat,read,write,fsync -p <PID>   # syscalls at the VFS top
+filetop          # (bcc) per-file read/write throughput, kernel-side
+biolatency       # (bcc) histogram of block-layer I/O latency — below the cache
+biosnoop         # (bcc) per-I/O: PID, device, LBA, latency — the bio layer itself
+cat /proc/<PID>/io                                  # bytes this process actually did
+# rchar/wchar = via syscalls (may be cache); read_bytes/write_bytes = actual disk
+```
+
+**The write path mirrors it** but adds the page-cache writeback wrinkle from §1.6: a buffered `write()` only dirties a page and returns; durability requires `fsync()` (or `O_DIRECT` to bypass the cache, which databases use to manage their own caching and guarantee ordering).
+
+> **Mental model** — VFS is a **universal power adapter**: your process speaks one plug shape (`read`/`write`), and VFS fits it to whatever filesystem socket is behind it. The page cache is a **countertop next to a deep warehouse (disk)**: if what you want is already on the counter, you grab it instantly; only a miss sends a forklift (bio → block layer → driver) into the warehouse — and whatever comes back is left on the counter for next time.
+
+### 4.3 Storage hardware — what the software sees
 
 **SSD internals — why they're different from HDDs:**
 
@@ -771,7 +958,7 @@ cat /sys/block/sda/queue/scheduler    # I/O scheduler (none/mq-deadline/bfq)
 
 For cloud VMs with NVMe-backed storage, `none` is usually optimal.
 
-### 4.2 LSM trees — write-optimised storage
+### 4.4 LSM trees — write-optimised storage
 
 Log-Structured Merge (LSM) trees power: LevelDB, RocksDB, Cassandra, etcd (via bbolt for metadata, but conceptually similar), Prometheus TSDB, InfluxDB, TiKV.
 
@@ -826,7 +1013,7 @@ Read arrives
 - Write amplification: lower
 - Better for write-heavy workloads
 
-### 4.3 Ceph architecture
+### 4.5 Ceph architecture
 
 Ceph is a unified distributed storage system providing object (RADOS Gateway / S3), block (RADOS Block Device / RBD), and file (CephFS) storage — all built on the same underlying RADOS (Reliable Autonomic Distributed Object Store).
 
@@ -893,7 +1080,7 @@ ceph osd perf  # Latency per OSD — identifies slow OSDs
 
 **Bluestore** replaced the older Filestore (which stored objects as files on XFS/ext4) to eliminate double-write (once to journal, once to filesystem). BlueStore writes directly to the block device with its own checksum and space management.
 
-### 4.4 CSI — Container Storage Interface
+### 4.6 CSI — Container Storage Interface
 
 CSI is the standard API between orchestrators (Kubernetes, Nomad) and storage systems. A CSI driver exposes a gRPC server implementing three services:
 

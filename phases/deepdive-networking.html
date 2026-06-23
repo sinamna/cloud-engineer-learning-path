@@ -1,0 +1,1000 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deep Dive — Networking — Senior Cloud Engineer Study System</title>
+<meta name="description" content="OSI to VXLAN: a packet's full journey through the kernel and Kubernetes">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a href="../index.html" class="topbar-brand"><span class="dot"></span>cloud-engineer-deepdive</a>
+    <nav class="topbar-nav">
+      <a href="../index.html">index</a>
+      <a href="../phases/phase1-foundation-gaps.html">01 foundation</a>
+      <a href="../phases/deepdive-networking.html" class="nav-sub active">↳ networking</a>
+      <a href="../phases/phase2-kubernetes-mastery.html">02 kubernetes</a>
+      <a href="../phases/phase3-observability-sre.html">03 observability</a>
+      <a href="../phases/phase4-architecture-design.html">04 architecture</a>
+      <a href="../phases/phase5-security-concepts.html">05 security</a>
+      <a href="../phases/phase6-interview-prep.html">06 interview</a>
+    </nav>
+  </div>
+</div>
+
+<div class="page-wrap">
+  <div class="doc-eyebrow">phase 1 · deep dive — networking</div>
+<h1 id="deep-dive-networking">Deep Dive — Networking</h1>
+<h2
+id="from-the-osi-model-to-vxlan-a-packets-full-journey-through-the-kernel-and-kubernetes">From
+the OSI Model to VXLAN: a Packet’s Full Journey Through the Kernel and
+Kubernetes</h2>
+<blockquote>
+<p>Networking is the most underrated skill in cloud engineering.
+Everyone learns <code>kubectl</code>; few can say what happens to a byte
+between two pods. This page builds that understanding from the wire up —
+every layer, every kernel hook, the history and tradeoffs behind each
+tool, and how overlays stitch a flat pod network across machines. The
+goal is a <strong>mental model so solid you can debug a network you’ve
+never seen.</strong></p>
+</blockquote>
+<div class="topic-legend">
+<p><span><span class="swatch" style="background:#6aa6ff"></span>Core
+concept</span> <span><span class="swatch"
+style="background:#e8b84e"></span>Interview hot topic</span> <span><span
+class="swatch" style="background:#b18cff"></span>Architecture
+depth</span> <span><span class="swatch"
+style="background:#e87a4e"></span>Gap to close</span> <span><span
+class="swatch" style="background:#4ee8a0"></span>Hands-on
+practice</span></p>
+</div>
+<div class="topic-grid">
+<a class="topic-card" href="#network-models-osi-and-tcpip">
+<h4>
+OSI &amp; TCP/IP models
+</h4>
+<div class="tags">
+<span class="cat cat-core">Core concept</span><span
+class="cat cat-interview">Interview hot topic</span>
+</div>
+</a> <a class="topic-card" href="#the-packets-journey-into-the-kernel">
+<h4>
+Packet into the kernel
+</h4>
+<div class="tags">
+<span class="cat cat-arch">Architecture depth</span><span
+class="cat cat-gap">Gap to close</span>
+</div>
+</a> <a class="topic-card" href="#layer-2-ethernet-arp-and-bridges">
+<h4>
+L2: Ethernet, ARP, bridges
+</h4>
+<div class="tags">
+<span class="cat cat-core">Core concept</span>
+</div>
+</a> <a class="topic-card" href="#layer-3-ip-routing-and-nat">
+<h4>
+L3: IP, routing, NAT
+</h4>
+<div class="tags">
+<span class="cat cat-core">Core concept</span><span
+class="cat cat-interview">Interview hot topic</span>
+</div>
+</a> <a class="topic-card" href="#layer-4-tcp-udp-and-quic">
+<h4>
+L4: TCP, UDP, QUIC
+</h4>
+<div class="tags">
+<span class="cat cat-core">Core concept</span><span
+class="cat cat-interview">Interview hot topic</span>
+</div>
+</a> <a class="topic-card" href="#the-tooling-and-what-it-replaced">
+<h4>
+Tooling &amp; its history
+</h4>
+<div class="tags">
+<span class="cat cat-practice">Hands-on practice</span>
+</div>
+</a>
+<a class="topic-card" href="#packet-filtering-and-nat-iptables-nftables-ipvs-ebpf">
+<h4>
+Filtering: iptables→eBPF
+</h4>
+<div class="tags">
+<span class="cat cat-arch">Architecture depth</span><span
+class="cat cat-gap">Gap to close</span>
+</div>
+</a> <a class="topic-card" href="#network-overlays-vxlan-ipip-geneve">
+<h4>
+Overlays: VXLAN, IPIP
+</h4>
+<div class="tags">
+<span class="cat cat-arch">Architecture depth</span><span
+class="cat cat-gap">Gap to close</span>
+</div>
+</a>
+<a class="topic-card" href="#kubernetes-networking-putting-it-together">
+<h4>
+Kubernetes networking
+</h4>
+<div class="tags">
+<span class="cat cat-arch">Architecture depth</span><span
+class="cat cat-interview">Interview hot topic</span>
+</div>
+<p></a></p>
+</div>
+<hr />
+<h2 id="network-models-osi-and-tcpip">1. Network models — OSI and
+TCP/IP</h2>
+<h3 id="the-history-that-explains-everything">The history that explains
+everything</h3>
+<p>Two models competed in the 1970s–80s. <strong>OSI</strong> (Open
+Systems Interconnection) was the committee-designed,
+government-and-telecom-backed standard — seven layers, rigorously
+specified <em>before</em> implementation. <strong>TCP/IP</strong> grew
+out of ARPANET: rough consensus and running code, standardized
+<em>after</em> it already worked.</p>
+<p>TCP/IP won the wire. OSI’s protocol suite is essentially dead. But
+OSI <strong>won the vocabulary</strong> — we still say “Layer 3 routing”
+and “Layer 7 load balancer” because the OSI layer numbers are the lingua
+franca. This is the first tradeoff lesson in networking: <em>the elegant
+design lost to the one that shipped, but its mental model survived
+because models are for humans, not machines.</em></p>
+<h3 id="the-layers-and-how-they-map">The layers, and how they map</h3>
+<table>
+<thead>
+<tr>
+<th>OSI</th>
+<th>OSI layer</th>
+<th>TCP/IP</th>
+<th>Real-world unit</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>7</td>
+<td>Application</td>
+<td>Application</td>
+<td>message</td>
+<td>HTTP, gRPC, DNS</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Presentation</td>
+<td>Application</td>
+<td>—</td>
+<td>TLS, encoding</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Session</td>
+<td>Application</td>
+<td>—</td>
+<td>(folded into app)</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Transport</td>
+<td>Transport</td>
+<td>segment / datagram</td>
+<td>TCP, UDP, QUIC</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Network</td>
+<td>Internet</td>
+<td>packet</td>
+<td>IP, ICMP</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Data Link</td>
+<td>Link</td>
+<td>frame</td>
+<td>Ethernet, ARP</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Physical</td>
+<td>Link</td>
+<td>bits</td>
+<td>copper, fiber, radio</td>
+</tr>
+</tbody>
+</table>
+<p>In practice engineers use a <strong>5-layer hybrid</strong>:
+Physical, Link, Network, Transport, Application. OSI’s layers 5–7
+collapse into “Application” because no real protocol cleanly separates
+session/presentation — TLS is “layer 6-ish” but lives wherever the app
+puts it.</p>
+<h3 id="encapsulation-the-matryoshka-doll">Encapsulation — the
+matryoshka doll</h3>
+<p>Every layer wraps the layer above in its own header (and sometimes
+trailer). Sending “GET /” over Ethernet:</p>
+<pre><code>┌──────────────────────────────────────────────────────────────────┐
+│ Ethernet hdr │ IP hdr │ TCP hdr │  HTTP payload &quot;GET /&quot;  │ Eth FCS │
+│  (L2, 14B)   │(L3,20B)│(L4,20B) │        (L7)            │ (CRC)   │
+└──────────────────────────────────────────────────────────────────┘
+   dst/src MAC   dst/src   dst/src     application data
+                  IP        port</code></pre>
+<p>Each layer only reads <em>its own</em> header and treats everything
+inside as opaque payload. A router rewrites L2 (new src/dst MAC each
+hop) but leaves L3 mostly alone (just decrements TTL). A NAT box
+rewrites L3/L4. A proxy terminates L4 and reads L7. <strong>Where a
+device operates tells you what it can see and change.</strong></p>
+<blockquote>
+<p><strong>Mental model</strong> — The OSI model is a <strong>stack of
+envelopes</strong>. Your letter (L7 data) goes in a transport envelope
+(TCP: “deliver reliably, to port 443”), inside a routing envelope (IP:
+“to this address, anywhere on Earth”), inside a local-delivery envelope
+(Ethernet: “to the machine on this wire”). Each post office opens only
+the envelope addressed to its layer, acts, and passes the rest along.
+Debugging is asking: <em>which envelope is wrong, and which office
+should have caught it?</em></p>
+</blockquote>
+<hr />
+<h2 id="the-packets-journey-into-the-kernel">2. The packet’s journey
+into the kernel</h2>
+<p>This is the part most engineers never learn, and it’s where real
+performance and drops live. We trace a single received packet from
+photons on fiber to <code>recv()</code> in your process.</p>
+<h3 id="the-receive-rx-path-step-by-step">The receive (RX) path, step by
+step</h3>
+<pre><code>1.  NIC receives frame off the wire, validates Ethernet FCS (CRC).
+2.  NIC DMAs the frame directly into a ring buffer in RAM (the &quot;rx ring&quot;),
+    a pre-allocated circular array of descriptors the driver set up.
+3.  NIC raises a hardware IRQ: &quot;I put something in the ring.&quot;
+4.  CPU jumps to the driver&#39;s IRQ handler (top half) — does the BARE
+    minimum: acknowledge, disable further IRQs for this queue, schedule
+    a softirq. (You must not do heavy work in hard IRQ context.)
+5.  NET_RX_SOFTIRQ runs (bottom half), serviced by the per-CPU
+    ksoftirqd thread, using NAPI polling: drain many packets per poll
+    instead of one IRQ per packet.
+6.  For each frame, the kernel allocates an sk_buff (skb) — the struct
+    that represents this packet for its whole life in the stack.
+7.  XDP hook fires here (if attached) — earliest possible eBPF hook,
+    can DROP/REDIRECT/PASS before the skb is even fully built.
+8.  Protocol handler: eth_type_trans() sets the L3 protocol; packet
+    enters the IP layer.
+9.  netfilter PREROUTING hook (conntrack, DNAT) runs.
+10. Routing decision: is this for me (local) or to be forwarded?
+11. netfilter INPUT hook (firewall for locally-destined traffic).
+12. Matched to a socket by the 4-tuple; skb queued on the socket&#39;s
+    receive buffer (sk_rcvbuf).
+13. Kernel wakes any process blocked in poll/epoll/recv on that socket.
+14. Process calls recv(); kernel copies data from skb into user buffer,
+    frees the skb.</code></pre>
+<h3 id="why-napi-exists-an-interrupt-storm-war-story">Why NAPI exists —
+an interrupt-storm war story</h3>
+<p>In the 1990s, every packet raised its own hardware interrupt. Under
+load (think 1 Gbps of small packets) the CPU spent 100% of its time in
+interrupt context — <strong>receive livelock</strong>: so busy being
+interrupted it never processed anything. The fix (NAPI, ~2003) is
+<strong>interrupt mitigation by polling</strong>: on the first packet,
+disable the IRQ and switch to polling the ring buffer in a softirq,
+draining a budget of packets per poll, then re-enable IRQs when the ring
+drains. Low latency at low load (interrupts), high throughput at high
+load (polling). This hybrid is the same pattern you’ll see again in
+storage (io_uring) and even Kubernetes informers.</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co"># The single most important RX-health file. Per-CPU columns:</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="co"># processed | dropped | time_squeeze | ... </span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /proc/net/softnet_stat</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Nonzero col2 (dropped) = ring overflowed: NIC filled it faster than</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="co">#   softirq drained it. col3 (squeezed) = NAPI hit its budget and yielded.</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="co"># NIC-level drops/errors (ring exhaustion, bad CRC, no buffer)</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="ex">ethtool</span> <span class="at">-S</span> eth0 <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-Ei</span> <span class="st">&#39;drop|err|miss|fifo&#39;</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> <span class="at">-s</span> <span class="at">-s</span> link show eth0</span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a><span class="co"># Ring buffer size — bumping it absorbs bursts (at a latency cost)</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="ex">ethtool</span> <span class="at">-g</span> eth0</span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="ex">ethtool</span> <span class="at">-G</span> eth0 rx 4096</span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a><span class="co"># Which CPU handles which NIC queue (IRQ affinity / RSS)</span></span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /proc/interrupts <span class="kw">|</span> <span class="fu">grep</span> eth0</span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a><span class="co"># Spread queues across CPUs with RSS/RPS for multi-core scaling</span></span></code></pre></div>
+<h3 id="the-sk_buff-the-packets-body">The sk_buff — the packet’s
+body</h3>
+<p>The <code>sk_buff</code> (skb) is the kernel’s universal packet
+container. Crucially, it carries <code>head/data/tail/end</code>
+pointers so layers can <strong>push/pull headers without copying
+payload</strong> — decapsulation is just moving the <code>data</code>
+pointer. Cloning an skb (e.g. for <code>tcpdump</code>) shares the
+payload and copies only metadata. Understanding that headers are
+added/removed by pointer arithmetic, not memcpy, is why the stack is
+fast.</p>
+<h3 id="offloads-pushing-work-to-the-nic">Offloads — pushing work to the
+NIC</h3>
+<p>Modern NICs do segmentation and checksums in hardware:</p>
+<ul>
+<li><strong>TSO/GSO</strong> (TCP/Generic Segmentation Offload): the
+stack hands the NIC one giant 64KB “super-packet”; the NIC slices it
+into MTU-sized frames. Fewer trips through the stack.</li>
+<li><strong>GRO</strong> (Generic Receive Offload): the inverse on RX —
+coalesce many small frames into one big skb before pushing it up the
+stack.</li>
+<li><strong>Checksum offload</strong>: NIC computes/verifies L3/L4
+checksums.</li>
+</ul>
+<p>This is why <code>tcpdump</code> sometimes shows packets larger than
+your MTU — you’re seeing the pre-segmentation super-packet, because the
+capture point is above the offload.</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="ex">ethtool</span> <span class="at">-k</span> eth0 <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-Ei</span> <span class="st">&#39;tso|gso|gro|checksum&#39;</span>   <span class="co"># see offload state</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="ex">ethtool</span> <span class="at">-K</span> eth0 gro off                              <span class="co"># toggle (debugging)</span></span></code></pre></div>
+<blockquote>
+<p><strong>Mental model</strong> — A packet arriving is a
+<strong>delivery truck backing into a loading dock (the ring
+buffer)</strong>. The hard IRQ is the buzzer — you just note “a truck is
+here” and walk away fast; you never unload in the doorway. The
+softirq/NAPI worker is the dock crew that unloads <em>many</em> trucks
+per shift (polling) so the buzzer doesn’t drive everyone insane
+(livelock). The skb is the pallet that moves through the warehouse by
+re-labeling, never repacking. Drops happen when trucks arrive faster
+than the crew unloads — and <code>softnet_stat</code> is the dock’s
+incident log.</p>
+</blockquote>
+<hr />
+<h2 id="layer-2-ethernet-arp-and-bridges">3. Layer 2 — Ethernet, ARP,
+and bridges</h2>
+<h3 id="frames-and-mac-addresses">Frames and MAC addresses</h3>
+<p>Layer 2 moves frames between devices on the <em>same</em>
+link/segment. Addressing is by 48-bit <strong>MAC address</strong>,
+burned into (or faked by) the NIC. L2 has no concept of “the internet” —
+it only knows “the machines I can reach directly on this
+wire/switch.”</p>
+<h3 id="arp-gluing-l3-to-l2">ARP — gluing L3 to L2</h3>
+<p>To send an IP packet to <code>10.0.0.5</code> on your local network,
+you need its MAC. <strong>ARP</strong> (Address Resolution Protocol)
+broadcasts “who has 10.0.0.5?”; the owner replies with its MAC, which
+you cache.</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> neigh                 <span class="co"># the ARP/neighbor cache (modern)</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="co"># arp -n                 # legacy equivalent</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> neigh flush all       <span class="co"># force re-resolution (debugging stale entries)</span></span></code></pre></div>
+<p>ARP is also a classic attack surface (ARP spoofing) and a classic
+outage cause (stale entries after a failover, before the cache expires
+or a gratuitous ARP is sent).</p>
+<h3 id="the-linux-bridge-and-veth-the-heart-of-container-networking">The
+Linux bridge and veth — the heart of container networking</h3>
+<p>A <strong>Linux bridge</strong> is a software L2 switch inside the
+kernel. A <strong>veth pair</strong> is a virtual Ethernet cable: two
+interfaces, whatever enters one exits the other. This duo <em>is</em>
+how containers get networking:</p>
+<pre><code>   Pod netns                          Host netns
+ ┌───────────┐                     ┌──────────────────────┐
+ │  eth0     │═══ veth pair ═══════│ vethXXXX             │
+ │ 10.244.0.5│                     │   └──► cni0 (bridge) │──► eth0 ──► wire
+ └───────────┘                     └──────────────────────┘</code></pre>
+<p>The container’s <code>eth0</code> is one end of a veth; the other end
+plugs into a bridge in the host namespace. The bridge switches frames
+between all pods on the node; traffic leaving the node goes out the host
+NIC. <strong>Every container network model is a variation on this
+picture.</strong></p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> link add veth0 type veth peer name veth1   <span class="co"># create a pair</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> link add br0 type bridge                    <span class="co"># create a bridge</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="ex">bridge</span> link                                    <span class="co"># show bridge ports (replaces brctl)</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="ex">bridge</span> fdb show                                <span class="co"># the bridge&#39;s MAC forwarding table</span></span></code></pre></div>
+<blockquote>
+<p><strong>Mental model</strong> — A bridge is a <strong>power strip for
+the network</strong>: dumb, fast, learns by listening (it records which
+MAC it saw on which port). A veth pair is a <strong>garden hose between
+two rooms (namespaces)</strong> — pour in one end, it comes out the
+other. Containers don’t have magic networking; they have a hose into a
+power strip.</p>
+</blockquote>
+<hr />
+<h2 id="layer-3-ip-routing-and-nat">4. Layer 3 — IP, routing, and
+NAT</h2>
+<h3 id="the-routing-decision">The routing decision</h3>
+<p>For every packet, L3 answers one question: <strong>“out which
+interface, and to which next-hop, does this go?”</strong> The kernel
+consults the routing table, longest-prefix-match wins.</p>
+<div class="sourceCode" id="cb8"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> route                       <span class="co"># main routing table (replaces `route -n`)</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> route get 8.8.8.8           <span class="co"># ask the kernel: how would YOU route this? (gold)</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a><span class="co"># 8.8.8.8 via 192.168.1.1 dev eth0 src 192.168.1.50 ...</span></span></code></pre></div>
+<p><code>ip route get</code> is the single most useful routing command —
+it shows the <em>actual</em> decision the kernel makes, including
+source-address selection, rather than making you simulate it in your
+head.</p>
+<h3 id="policy-routing-more-than-one-table">Policy routing — more than
+one table</h3>
+<p>Linux supports <strong>multiple routing tables</strong> plus rules
+choosing between them based on source, fwmark, etc. This is how a node
+can route pod traffic differently from host traffic — Calico, Cilium,
+and cloud CNIs lean on it heavily.</p>
+<div class="sourceCode" id="cb9"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> rule                        <span class="co"># the rules that pick a table</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> route show table local      <span class="co"># the kernel&#39;s auto-managed local table</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> route show table 100        <span class="co"># a CNI-managed table</span></span></code></pre></div>
+<h3 id="nat-and-conntrack-the-stateful-rewrite">NAT and conntrack — the
+stateful rewrite</h3>
+<p><strong>NAT</strong> rewrites source/destination IP:port.
+<strong>SNAT/MASQUERADE</strong> (many private hosts → one public IP) is
+how your laptop and how pod egress reaches the internet. The magic that
+makes replies come back is <strong>conntrack</strong> (connection
+tracking): the kernel remembers each flow’s original and translated
+tuples so the reverse packet is un-rewritten correctly.</p>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Conntrack is a finite table — exhausting it drops new connections,</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="co"># a real and nasty production failure on busy NAT gateways / nodes.</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a><span class="ex">sysctl</span> net.netfilter.nf_conntrack_max</span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> /proc/sys/net/netfilter/nf_conntrack_count    <span class="co"># current usage</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a><span class="ex">conntrack</span> <span class="at">-L</span>                                       <span class="co"># list live flows</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a><span class="ex">conntrack</span> <span class="at">-S</span>                                       <span class="co"># per-cpu stats incl. drops</span></span></code></pre></div>
+<blockquote>
+<p><strong>Mental model</strong> — Routing is the <strong>postal sorting
+facility</strong>: it doesn’t know the whole route, only “the next bin
+toward the destination” (next-hop), and it re-decides at every hop. NAT
+is the <strong>front desk of an office building</strong>: outgoing mail
+gets the building’s return address, and the desk keeps a ledger
+(conntrack) so replies addressed to the building get routed back to the
+right person inside. Lose the ledger and every reply is
+undeliverable.</p>
+</blockquote>
+<hr />
+<h2 id="layer-4-tcp-udp-and-quic">5. Layer 4 — TCP, UDP, and QUIC</h2>
+<h3 id="tcp-reliability-built-on-an-unreliable-network">TCP: reliability
+built on an unreliable network</h3>
+<p>TCP turns lossy, reordering IP into an ordered, reliable byte stream
+via sequence numbers, ACKs, retransmission, flow control (receiver
+window) and congestion control (network estimate). The <strong>3-way
+handshake</strong> (SYN, SYN-ACK, ACK) syncs sequence numbers and costs
+one round-trip before any data.</p>
+<h3
+id="congestion-control-a-history-of-guessing-the-networks-capacity">Congestion
+control — a history of guessing the network’s capacity</h3>
+<table>
+<colgroup>
+<col style="width: 9%" />
+<col style="width: 20%" />
+<col style="width: 50%" />
+<col style="width: 18%" />
+</colgroup>
+<thead>
+<tr>
+<th>Era</th>
+<th>Algorithm</th>
+<th>How it estimates capacity</th>
+<th>Weakness</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1988</td>
+<td>Reno / NewReno</td>
+<td>Loss = congestion; halve on loss (AIMD)</td>
+<td>Collapses on random (non-congestion) loss</td>
+</tr>
+<tr>
+<td>2006</td>
+<td><strong>Cubic</strong> (Linux default)</td>
+<td>Cubic growth after loss; faster recovery on fat pipes</td>
+<td>Still loss-based; bufferbloat</td>
+</tr>
+<tr>
+<td>2016</td>
+<td><strong>BBR</strong> (Google)</td>
+<td>Models bottleneck bandwidth × RTT directly; ignores loss</td>
+<td>Can be unfair to Cubic flows</td>
+</tr>
+</tbody>
+</table>
+<p>The arc: loss-based assumes <em>any</em> packet loss means congestion
+— false on Wi-Fi and WANs where loss is often random.
+<strong>BBR</strong> instead builds a model of the path’s
+bandwidth-delay product and paces to it, which is why it dominates on
+lossy long-haul links (and powers much of Google/YouTube).</p>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="ex">sysctl</span> net.ipv4.tcp_congestion_control                 <span class="co"># current</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="ex">sysctl</span> net.ipv4.tcp_available_congestion_control       <span class="co"># what&#39;s loaded</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="ex">sysctl</span> <span class="at">-w</span> net.ipv4.tcp_congestion_control=bbr          <span class="co"># switch</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a><span class="ex">ss</span> <span class="at">-tni</span>                                                <span class="co"># per-socket rtt, cwnd, retrans</span></span></code></pre></div>
+<h3 id="udp-when-you-want-the-network-to-get-out-of-the-way">UDP — when
+you want the network to get out of the way</h3>
+<p>UDP is IP plus ports plus a checksum — no handshake, ordering, or
+retransmission. You use it when <em>you</em> want to control reliability
+(game state, VoIP, DNS, QUIC) or when there’s nothing to be reliable
+about (metrics, video frames where a late frame is useless anyway).</p>
+<h3 id="quic-rebuilding-tcp-in-user-space-over-udp">QUIC — rebuilding
+TCP in user space over UDP</h3>
+<p>TCP has a fatal structural flaw for multiplexed protocols:
+<strong>head-of-line blocking</strong>. HTTP/2 multiplexes many streams
+over one TCP connection, but if <em>one</em> TCP segment is lost,
+<em>all</em> streams stall waiting for the retransmit — because TCP is a
+single ordered byte stream. <strong>QUIC</strong> (the basis of HTTP/3)
+runs over UDP and implements streams, reliability, and congestion
+control itself, so a lost packet only blocks its own stream. It also
+folds the TLS handshake into the transport handshake (0–1 RTT setup) and
+survives IP changes (connection migration — your phone switching
+Wi-Fi→LTE keeps the connection).</p>
+<p>The tradeoff: QUIC lives in user space, so it costs more CPU per byte
+than kernel TCP, and middleboxes/firewalls that only understand TCP can
+mishandle it.</p>
+<blockquote>
+<p><strong>Mental model</strong> — TCP is a <strong>single conveyor belt
+with a strict one-at-a-time rule</strong>: drop one box and everything
+behind it waits. HTTP/2 put many orders on that one belt — fast until a
+jam blocks them all (head-of-line blocking). QUIC gives each order
+<strong>its own belt</strong> (independent streams over UDP), so one jam
+doesn’t stop the others, and it remembers your order even if you walk to
+a different counter (connection migration).</p>
+</blockquote>
+<hr />
+<h2 id="the-tooling-and-what-it-replaced">6. The tooling — and what it
+replaced</h2>
+<p>Every networking tool you know replaced an older one for a reason.
+Knowing the <em>why</em> tells you which to trust.</p>
+<table>
+<colgroup>
+<col style="width: 8%" />
+<col style="width: 30%" />
+<col style="width: 38%" />
+<col style="width: 22%" />
+</colgroup>
+<thead>
+<tr>
+<th>Task</th>
+<th>Legacy (<code>net-tools</code>)</th>
+<th>Modern (<code>iproute2</code>/other)</th>
+<th>Why the switch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Interfaces/addresses</td>
+<td><code>ifconfig</code></td>
+<td><code>ip addr</code> / <code>ip link</code></td>
+<td>net-tools couldn’t show multiple IPs, IPv6, or namespaces well;
+unmaintained</td>
+</tr>
+<tr>
+<td>Routing table</td>
+<td><code>route -n</code></td>
+<td><code>ip route</code></td>
+<td>policy routing, multiple tables</td>
+</tr>
+<tr>
+<td>Socket stats</td>
+<td><code>netstat -tulpn</code></td>
+<td><code>ss -tulpn</code></td>
+<td><code>ss</code> reads netlink directly — far faster on busy
+hosts</td>
+</tr>
+<tr>
+<td>ARP cache</td>
+<td><code>arp -n</code></td>
+<td><code>ip neigh</code></td>
+<td>unified netlink interface</td>
+</tr>
+<tr>
+<td>Bridges</td>
+<td><code>brctl</code></td>
+<td><code>bridge</code> / <code>ip link</code></td>
+<td>folded into iproute2</td>
+</tr>
+<tr>
+<td>Packet filter</td>
+<td><code>iptables</code></td>
+<td><code>nftables</code> / eBPF</td>
+<td>O(n) rule scaling, atomic updates</td>
+</tr>
+<tr>
+<td>Capture</td>
+<td><code>tcpdump</code></td>
+<td><code>tcpdump</code> + <code>tshark</code>/Wireshark</td>
+<td>tcpdump still king for CLI; tshark adds dissectors</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The lesson:</strong> <code>net-tools</code>
+(<code>ifconfig</code>, <code>netstat</code>, <code>route</code>) parses
+<code>/proc</code> text and predates namespaces, multiple addresses, and
+modern netlink; <code>iproute2</code> talks the kernel’s native
+<strong>netlink</strong> API. On a host with 100k sockets,
+<code>netstat</code> can take seconds; <code>ss</code> returns
+instantly. Reach for <code>ip</code>, <code>ss</code>, and
+<code>bridge</code> first.</p>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Capture and actually read it</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="ex">tcpdump</span> <span class="at">-ni</span> eth0 <span class="st">&#39;tcp port 443 and host 10.0.0.5&#39;</span> <span class="at">-w</span> cap.pcap</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="ex">tcpdump</span> <span class="at">-nr</span> cap.pcap <span class="at">-A</span>                 <span class="co"># ASCII payload</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a><span class="ex">tshark</span> <span class="at">-r</span> cap.pcap <span class="at">-Y</span> <span class="st">&#39;http.request&#39;</span>    <span class="co"># filter with dissectors</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Live socket truth</span></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a><span class="ex">ss</span> <span class="at">-tanp</span>                                <span class="co"># all TCP, numeric, with PIDs</span></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a><span class="ex">ss</span> <span class="at">-s</span>                                   <span class="co"># summary by state (TIME_WAIT etc.)</span></span></code></pre></div>
+<blockquote>
+<p><strong>Mental model</strong> — Old tools <em>read the kernel’s
+diary</em> (<code>/proc</code> text); new tools <em>call the kernel
+directly</em> (netlink). The diary is human-readable but slow and lossy;
+the direct line is fast and complete. When two tools disagree, trust the
+one closer to the kernel.</p>
+</blockquote>
+<hr />
+<h2 id="packet-filtering-and-nat-iptables-nftables-ipvs-ebpf">7. Packet
+filtering and NAT — iptables, nftables, IPVS, eBPF</h2>
+<h3 id="netfilter-the-hook-points">netfilter — the hook points</h3>
+<p>The Linux firewall isn’t <code>iptables</code>; it’s
+<strong>netfilter</strong>, a set of hook points in the packet path
+(PREROUTING, INPUT, FORWARD, OUTPUT, POSTROUTING).
+<code>iptables</code>, <code>nftables</code>, and <code>conntrack</code>
+are all <em>clients</em> of netfilter. This is why you saw netfilter
+hooks in the RX path (§2).</p>
+<pre><code>        ┌─────────────┐     routing    ┌─────────┐
+  ─────►│ PREROUTING  │──────decision──►│ FORWARD │─────► POSTROUTING ─────►
+        │ (DNAT,      │       │         └─────────┘            │
+        │  conntrack) │       ▼                                ▼
+        └─────────────┘    ┌───────┐                     (SNAT/MASQ)
+                           │ INPUT │  local process  ┌────────┐
+                           └───────┘ ───────────────►│ OUTPUT │</code></pre>
+<h3 id="the-scaling-story-why-kubernetes-left-iptables">The scaling
+story: why Kubernetes left iptables</h3>
+<p><code>iptables</code> evaluates rules as an <strong>ordered list, top
+to bottom — O(n)</strong>. A cluster with thousands of Services
+generates tens of thousands of rules; every packet may traverse them
+linearly, and every Service change rewrites the whole table
+non-atomically. That’s the bottleneck that drove three successive
+answers:</p>
+<table>
+<colgroup>
+<col style="width: 19%" />
+<col style="width: 28%" />
+<col style="width: 36%" />
+<col style="width: 15%" />
+</colgroup>
+<thead>
+<tr>
+<th>Mechanism</th>
+<th>Data structure</th>
+<th>Service routing cost</th>
+<th>Used by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>iptables</strong></td>
+<td>ordered rule chains</td>
+<td>O(n) per packet</td>
+<td>legacy kube-proxy</td>
+</tr>
+<tr>
+<td><strong>IPVS</strong></td>
+<td>in-kernel hash tables</td>
+<td>O(1) lookup, real LB algos (rr, lc, …)</td>
+<td>kube-proxy <code>--proxy-mode=ipvs</code></td>
+</tr>
+<tr>
+<td><strong>nftables</strong></td>
+<td>maps/sets, single VM</td>
+<td>O(1) via maps, atomic updates</td>
+<td>modern kube-proxy nftables mode, firewalls</td>
+</tr>
+<tr>
+<td><strong>eBPF</strong></td>
+<td>programmable, hash maps</td>
+<td>O(1), no netfilter traversal at all</td>
+<td>Cilium</td>
+</tr>
+</tbody>
+</table>
+<p><strong>eBPF (Cilium)</strong> is the current frontier: instead of
+<em>configuring</em> netfilter, it <em>replaces</em> the data path with
+custom kernel programs attached at XDP/tc, doing service load-balancing
+and policy with hash-map lookups and even bypassing iptables/conntrack
+entirely. The tradeoff is operational complexity and a higher floor of
+kernel/observability sophistication.</p>
+<blockquote>
+<p><strong>Mental model</strong> — <code>iptables</code> is a
+<strong>paper checklist read top to bottom at every door</strong> — fine
+for 10 rules, agony for 10,000. IPVS/nftables swap the checklist for an
+<strong>index (a hash map): jump straight to the answer.</strong> eBPF
+goes further and <strong>rewrites the door itself</strong> so there’s
+barely a check at all. Kubernetes’ networking evolution is the story of
+escaping an O(n) checklist.</p>
+</blockquote>
+<hr />
+<h2 id="network-overlays-vxlan-ipip-geneve">8. Network overlays — VXLAN,
+IPIP, GENEVE</h2>
+<h3 id="the-problem-overlays-solve">The problem overlays solve</h3>
+<p>Kubernetes promises a <strong>flat network</strong>: every pod gets a
+routable IP and any pod can reach any other pod without NAT. But the
+physical network (the <strong>underlay</strong>) knows nothing about pod
+IPs like <code>10.244.3.7</code> — they’re not in anyone’s routing
+tables, and the switches would drop them. An <strong>overlay</strong>
+solves this by <strong>encapsulating</strong> pod packets inside packets
+the underlay <em>does</em> understand, addressed node-to-node.</p>
+<pre><code>Pod A (10.244.1.5, node1)  ──►  Pod B (10.244.2.9, node2)
+
+Original (inner) packet:   [ IP src 10.244.1.5 → dst 10.244.2.9 | payload ]
+                                          │ encapsulate
+                                          ▼
+On the wire (outer packet):[ IP src node1 → dst node2 | VXLAN/IPIP | inner packet ]
+                                          │ the underlay routes THIS (node IPs)
+                                          ▼
+                            node2 decapsulates, delivers inner packet to Pod B</code></pre>
+<h3 id="the-encapsulation-options">The encapsulation options</h3>
+<table>
+<colgroup>
+<col style="width: 16%" />
+<col style="width: 13%" />
+<col style="width: 18%" />
+<col style="width: 32%" />
+<col style="width: 18%" />
+</colgroup>
+<thead>
+<tr>
+<th>Overlay</th>
+<th>Encap</th>
+<th>Overhead</th>
+<th>What it carries</th>
+<th>Tradeoff</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>IPIP</strong></td>
+<td>IP-in-IP</td>
+<td><strong>20 bytes</strong></td>
+<td>IP inside IP</td>
+<td>Smallest overhead, but IPv4-only payload, no L2, less metadata</td>
+</tr>
+<tr>
+<td><strong>VXLAN</strong></td>
+<td>MAC-in-UDP (port 4789)</td>
+<td><strong>50 bytes</strong></td>
+<td>full L2 frame + 24-bit VNI</td>
+<td>Ubiquitous, hardware-offloadable, carries L2 — but biggest
+overhead</td>
+</tr>
+<tr>
+<td><strong>GRE</strong></td>
+<td>IP-in-GRE</td>
+<td>24 bytes</td>
+<td>flexible</td>
+<td>General-purpose, older, less offload</td>
+</tr>
+<tr>
+<td><strong>GENEVE</strong></td>
+<td>UDP, extensible TLV options</td>
+<td>~50+ bytes</td>
+<td>VXLAN + extensible metadata</td>
+<td>Future-proof (carries policy/identity), used by Cilium/OVN</td>
+</tr>
+</tbody>
+</table>
+<p><strong>VXLAN</strong> is the workhorse: it wraps the entire inner
+Ethernet frame in UDP, with a 24-bit <strong>VNI</strong> (VXLAN Network
+Identifier) giving 16M virtual networks (vs VLAN’s 4,094 — the original
+motivation). Each node runs a <strong>VTEP</strong> (VXLAN Tunnel
+Endpoint) that encaps/decaps. Because it’s UDP, it’s NAT-friendly and
+hardware-offloadable on modern NICs.</p>
+<p><strong>IPIP</strong> is the minimalist: just an outer IP header (20
+bytes) around the inner IP packet. Lower overhead, but it can’t carry L2
+info and is IPv4-centric. Calico uses it as a lightweight option when
+pure routing (BGP) isn’t available.</p>
+<p><strong>GENEVE</strong> is VXLAN’s successor: same UDP encapsulation,
+but with extensible <strong>TLV options</strong> so the overlay can
+carry metadata (like security identity) alongside the packet — which is
+exactly what identity-aware CNIs want.</p>
+<h3 id="the-mtu-tax-the-1-overlay-footgun">The MTU tax — the #1 overlay
+footgun</h3>
+<p>Encapsulation eats into the <strong>MTU</strong>. If the underlay MTU
+is 1500 and VXLAN adds 50 bytes, the pod MTU must drop to
+<strong>1450</strong> or packets get fragmented (or silently dropped if
+DF is set and PMTU discovery is blocked). Mismatched overlay MTU causes
+the classic “small requests work, large responses hang” bug — TLS
+handshakes complete (small packets) but the first big response
+stalls.</p>
+<div class="sourceCode" id="cb15"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> <span class="at">-d</span> link show flannel.1        <span class="co"># a VXLAN device: shows vxlan id (VNI), port</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> <span class="at">-d</span> link show tunl0            <span class="co"># an IPIP tunnel device</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a><span class="ex">bridge</span> fdb show dev flannel.1    <span class="co"># VTEP forwarding: remote MAC → remote node IP</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> link show eth0 <span class="kw">|</span> <span class="fu">grep</span> mtu     <span class="co"># verify pod/node MTU accounts for encap overhead</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Reproduce an MTU bug: ping with don&#39;t-fragment at the edge size</span></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a><span class="fu">ping</span> <span class="at">-M</span> do <span class="at">-s</span> 1472 10.244.2.9    <span class="co"># 1472 + 28 = 1500; bump -s to find the cliff</span></span></code></pre></div>
+<blockquote>
+<p><strong>Mental model</strong> — An overlay is <strong>putting your
+inter-office mail (pod-to-pod) inside the postal system’s standard
+envelope (node-to-node)</strong> because the post office only
+understands its own envelopes. VXLAN uses a big, universal envelope that
+fits a whole letter-with-its-own-envelope (L2-in-UDP); IPIP uses a thin
+envelope that barely wraps the inner letter (IP-in-IP). The catch: a
+wrapped letter is heavier (MTU overhead), so if you stuff it as full as
+an unwrapped one, it won’t fit through the slot (fragmentation).</p>
+</blockquote>
+<hr />
+<h2 id="kubernetes-networking-putting-it-together">9. Kubernetes
+networking — putting it together</h2>
+<h3 id="the-four-rules-of-the-kubernetes-network-model">The four rules
+of the Kubernetes network model</h3>
+<ol type="1">
+<li>Every <strong>pod gets its own IP</strong> (no port-mapping
+games).</li>
+<li>Every pod can reach <strong>every other pod</strong> without NAT
+(flat network).</li>
+<li><strong>Nodes can reach all pods</strong> (and vice versa) without
+NAT.</li>
+<li>The IP a pod sees itself as <strong>is the IP others use</strong> to
+reach it.</li>
+</ol>
+<p>Everything above (bridges, veth, routing, overlays) exists to make
+these four rules true across many machines. Kubernetes itself doesn’t
+implement them — it delegates to a <strong>CNI plugin</strong>.</p>
+<h3 id="how-cni-is-actually-invoked">How CNI is actually invoked</h3>
+<p>When the kubelet creates a pod, it calls the CNI plugin as an
+executable: a binary in <code>/opt/cni/bin</code>, configured by JSON in
+<code>/etc/cni/net.d</code>, receiving the container’s netns on stdin
+and returning the assigned IP. That’s the entire contract — which is why
+CNI plugins range from 200-line scripts to Cilium.</p>
+<h3 id="the-cni-landscape-and-their-tradeoffs">The CNI landscape and
+their tradeoffs</h3>
+<table>
+<colgroup>
+<col style="width: 7%" />
+<col style="width: 16%" />
+<col style="width: 35%" />
+<col style="width: 23%" />
+<col style="width: 16%" />
+</colgroup>
+<thead>
+<tr>
+<th>CNI</th>
+<th>Data path</th>
+<th>Pod-to-pod across nodes</th>
+<th>Network policy</th>
+<th>Best when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Flannel</strong></td>
+<td>Linux bridge + <strong>VXLAN</strong> overlay</td>
+<td>encapsulated</td>
+<td>none (needs add-on)</td>
+<td>simplicity; you just want it to work</td>
+</tr>
+<tr>
+<td><strong>Calico</strong></td>
+<td>pure L3 routing + <strong>BGP</strong>, or
+<strong>IPIP</strong>/VXLAN overlay</td>
+<td>routed (no encap) or IPIP</td>
+<td>rich (iptables/eBPF)</td>
+<td>scale, policy, on-prem with BGP</td>
+</tr>
+<tr>
+<td><strong>Cilium</strong></td>
+<td><strong>eBPF</strong> at tc/XDP; VXLAN or <strong>GENEVE</strong> or
+routing</td>
+<td>eBPF + optional encap</td>
+<td>rich, identity-based</td>
+<td>performance, observability, zero-trust</td>
+</tr>
+<tr>
+<td><strong>AWS VPC CNI</strong></td>
+<td>pods get <strong>real VPC IPs</strong> (ENI)</td>
+<td>native VPC routing, no overlay</td>
+<td>security groups</td>
+<td>EKS; no overlay tax</td>
+</tr>
+</tbody>
+</table>
+<p>The fundamental fork: <strong>overlay vs. native routing.</strong>
+Overlays (Flannel VXLAN) work anywhere because they hide pod IPs from
+the underlay — at the cost of the MTU/encap tax. Native routing (Calico
+BGP, AWS VPC CNI) makes pod IPs <em>first-class</em> in the real network
+— faster and debuggable with normal tools, but it requires control of
+(or cooperation from) the underlay.</p>
+<h3 id="services-the-second-networking-system">Services — the second
+networking system</h3>
+<p>Pod IPs are ephemeral, so <strong>Services</strong> give a stable
+virtual IP (ClusterIP) that load-balances to healthy pods. This is
+implemented by <strong>kube-proxy</strong> (iptables/IPVS/nftables modes
+from §7) or bypassed entirely by Cilium’s eBPF. A request to a ClusterIP
+is DNAT’d to a real pod IP, then conntrack ensures replies come back —
+the exact §4 NAT mechanism, applied to service routing.</p>
+<div class="sourceCode" id="cb16"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="co"># The CNI config and binaries the kubelet uses</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> /etc/cni/net.d/ <span class="kw">;</span> <span class="fu">ls</span> /opt/cni/bin/</span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a><span class="co"># See the overlay device and its remote-node forwarding table</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a><span class="ex">ip</span> <span class="at">-d</span> link show <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-A2</span> <span class="at">-Ei</span> <span class="st">&#39;vxlan|ipip|geneve&#39;</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Trace a Service to its backends</span></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> get endpointslices <span class="at">-l</span> kubernetes.io/service-name=my-svc</span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a><span class="co"># On a node, see how the Service VIP is programmed</span></span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a><span class="ex">iptables-save</span> <span class="at">-t</span> nat <span class="kw">|</span> <span class="fu">grep</span> my-svc        <span class="co"># iptables mode</span></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a><span class="ex">ipvsadm</span> <span class="at">-Ln</span>                                <span class="co"># IPVS mode</span></span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a><span class="ex">cilium-dbg</span> service list                    <span class="co"># Cilium/eBPF mode</span></span></code></pre></div>
+<blockquote>
+<p><strong>Mental model</strong> — Kubernetes networking is a
+<strong>promise</strong> (“every pod can talk to every pod, flatly”)
+that the CNI keeps using the primitives from this whole page:
+<strong>veth + bridge</strong> to get a pod onto the node (§3),
+<strong>routing</strong> to leave the node (§4), and an <strong>overlay
+or BGP</strong> to cross between nodes (§8). Services layer a
+<strong>stable phone number (VIP) over a rotating cast of pods</strong>,
+dialed by NAT (§4) and programmed by whichever filtering engine the
+cluster chose (§7). There is no magic — only these layers, composed.</p>
+</blockquote>
+<hr />
+<h2 id="review-self-check">Review — self-check</h2>
+<p>If you can answer these from memory, you own this material. If not,
+the linked section is where to go back.</p>
+<ol type="1">
+<li><strong>Why did TCP/IP beat OSI on the wire but lose the vocabulary
+war?</strong> → <a href="#network-models-osi-and-tcpip">§1</a></li>
+<li><strong>A packet arrives. Name every stage from the NIC’s DMA to
+your <code>recv()</code> — and where drops show up.</strong> → <a
+href="#the-packets-journey-into-the-kernel">§2</a></li>
+<li><strong>What problem did NAPI solve, and what’s the general pattern
+(interrupt vs. poll) it represents?</strong> → <a
+href="#the-packets-journey-into-the-kernel">§2</a></li>
+<li><strong>Containers have no special networking — what two primitives
+actually connect a pod to the node?</strong> (veth + bridge) → <a
+href="#layer-2-ethernet-arp-and-bridges">§3</a></li>
+<li><strong>What does <code>ip route get 8.8.8.8</code> show that
+<code>ip route</code> doesn’t?</strong> → <a
+href="#layer-3-ip-routing-and-nat">§4</a></li>
+<li><strong>Why can exhausting the conntrack table take down a busy
+node, and how would you detect it?</strong> → <a
+href="#layer-3-ip-routing-and-nat">§4</a></li>
+<li><strong>Why is BBR better than Cubic on a lossy WAN? What assumption
+does loss-based CC make that’s wrong there?</strong> → <a
+href="#layer-4-tcp-udp-and-quic">§5</a></li>
+<li><strong>What is head-of-line blocking in HTTP/2, and how does QUIC
+eliminate it?</strong> → <a href="#layer-4-tcp-udp-and-quic">§5</a></li>
+<li><strong>Why does <code>ss</code> return instantly where
+<code>netstat</code> crawls on a busy host?</strong> (netlink vs
+<code>/proc</code>) → <a
+href="#the-tooling-and-what-it-replaced">§6</a></li>
+<li><strong>Why did Kubernetes move kube-proxy from iptables toward
+IPVS/nftables/eBPF? What’s the complexity class problem?</strong> → <a
+href="#packet-filtering-and-nat-iptables-nftables-ipvs-ebpf">§7</a></li>
+<li><strong>VXLAN vs IPIP: overhead, what each carries, and when you’d
+pick each.</strong> → <a
+href="#network-overlays-vxlan-ipip-geneve">§8</a></li>
+<li><strong>A TLS handshake succeeds but the first large response hangs.
+What’s your first hypothesis?</strong> (overlay MTU) → <a
+href="#network-overlays-vxlan-ipip-geneve">§8</a></li>
+<li><strong>State the four rules of the Kubernetes network model, and
+name the primitive that makes each true across nodes.</strong> → <a
+href="#kubernetes-networking-putting-it-together">§9</a></li>
+<li><strong>Overlay (Flannel VXLAN) vs native routing (Calico BGP / AWS
+VPC CNI): the core tradeoff in one sentence.</strong> → <a
+href="#kubernetes-networking-putting-it-together">§9</a></li>
+</ol>
+<p><strong>The one-paragraph summary to carry with you:</strong> A byte
+leaves your app through a socket, gets wrapped layer by layer (L4
+reliability, L3 routing, L2 delivery), is DMA’d onto a ring buffer at
+the far NIC, drained by a polling softirq into an <code>sk_buff</code>,
+run through netfilter hooks and a routing decision, and handed to the
+destination socket. In Kubernetes, that journey crosses a
+<strong>veth</strong> into a <strong>bridge</strong>, gets
+<strong>routed</strong> off the node, is <strong>encapsulated</strong>
+(VXLAN/IPIP) or <strong>natively routed</strong> (BGP) to the
+destination node, and — if it was aimed at a Service — was
+<strong>NAT’d</strong> from a virtual IP to a real pod along the way.
+Every layer is an envelope; debugging is finding the wrong one.</p>
+<hr />
+<p>← Back to <a
+href="phase1-foundation-gaps.html#networking-deep-dive">Phase 1 —
+Foundation Gaps</a></p>
+    <div class="phase-nav-foot">
+        <a href="phase1-foundation-gaps.html"><span class="label">&larr; previous</span>Phase 1 — Foundation Gaps</a>
+            <a href="phase2-kubernetes-mastery.html" class="next"><span class="label">next &rarr;</span>Phase 2 — Kubernetes Mastery</a>
+      </div>
+  </div>
+
+<footer class="site-footer">
+  senior cloud engineer study system — generated reference material, not affiliated with any employer
+</footer>
+
+</body>
+</html>

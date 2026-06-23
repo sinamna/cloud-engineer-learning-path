@@ -46,6 +46,20 @@ ACTIVE_KEYS = {
     "phase6-interview-prep": "p6active",
 }
 
+# Standalone deep-dive companion pages. These are not part of the linear
+# phase progression, so they carry their own metadata and prev/next links
+# (typically pointing back to their parent phase) rather than being chained.
+DEEPDIVES = {
+    "deepdive-networking": {
+        "title": "Deep Dive — Networking",
+        "sub": "OSI to VXLAN: a packet's full journey through the kernel and Kubernetes",
+        "eyebrow": "phase 1 · deep dive — networking",
+        "active": "ndactive",
+        "prev": ("phase1-foundation-gaps.html", "Phase 1 — Foundation Gaps"),
+        "next": ("phase2-kubernetes-mastery.html", "Phase 2 — Kubernetes Mastery"),
+    },
+}
+
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 for i, name in enumerate(ORDER):
@@ -81,6 +95,32 @@ for i, name in enumerate(ORDER):
     if nextlink:
         cmd += ["-V", f"nextlink={nextlink}", "-V", f"nexttitle={nexttitle}"]
 
+    cmd += ["-o", f"phases/{name}.html"]
+
+    print(f"Converting {name}...")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("ERROR:", result.stderr)
+    else:
+        print("  OK")
+
+for name, cfg in DEEPDIVES.items():
+    cmd = [
+        "pandoc", f"src/{name}.md",
+        "-f", "markdown",
+        "-t", "html5",
+        "--template=assets/template.html",
+        "-V", f"title={cfg['title']}",
+        "-V", f"subtitle={cfg['sub']}",
+        "-V", f"eyebrow={cfg['eyebrow']}",
+        "-V", "cssroot=../",
+        "-V", "navfoot=1",
+        "-V", f'{cfg["active"]}= active',
+    ]
+    prevlink, prevtitle = cfg["prev"]
+    nextlink, nexttitle = cfg["next"]
+    cmd += ["-V", f"prevlink={prevlink}", "-V", f"prevtitle={prevtitle}"]
+    cmd += ["-V", f"nextlink={nextlink}", "-V", f"nexttitle={nexttitle}"]
     cmd += ["-o", f"phases/{name}.html"]
 
     print(f"Converting {name}...")
